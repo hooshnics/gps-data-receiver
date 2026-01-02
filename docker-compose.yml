@@ -1,0 +1,170 @@
+services:
+  # Redis for queuing
+  redis:
+    image: redis:7-alpine
+    container_name: gps-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - gps-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MySQL for failed packets storage
+  mysql:
+    image: mysql:8.0
+    container_name: gps-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: gps_receiver
+      MYSQL_USER: gpsuser
+      MYSQL_PASSWORD: gpspass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - gps-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: --default-authentication-plugin=mysql_native_password
+
+  # GPS Data Receiver Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Enable BuildKit for faster builds with cache
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    container_name: gps-receiver
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Server Configuration
+      SERVER_PORT: "8080"
+      SERVER_HOST: "0.0.0.0"
+      REQUEST_TIMEOUT: "5s"
+      MAX_REQUEST_SIZE: "1048576"
+
+      # Destination Servers (read from .env file)
+      DESTINATION_SERVERS: ${DESTINATION_SERVERS}
+
+      # Redis Configuration
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      REDIS_STREAM_NAME: "gps:reports"
+      REDIS_CONSUMER_GROUP: "gps-workers"
+      REDIS_MAX_LEN: "10000"
+
+      # MySQL Configuration
+      MYSQL_HOST: "mysql"
+      MYSQL_PORT: "3306"
+      MYSQL_USER: "gpsuser"
+      MYSQL_PASSWORD: "gpspass"
+      MYSQL_DATABASE: "gps_receiver"
+      MYSQL_MAX_OPEN_CONNS: "25"
+      MYSQL_MAX_IDLE_CONNS: "10"
+      MYSQL_CONN_MAX_LIFETIME: "300s"
+
+      # Worker Configuration
+      WORKER_COUNT: "50"
+      WORKER_BATCH_SIZE: "10"
+
+      # Retry Configuration
+      MAX_RETRY_ATTEMPTS: "5"
+      RETRY_DELAY_FIRST: "5s"
+      RETRY_DELAY_SUBSEQUENT: "10s"
+
+      # HTTP Client Configuration
+      HTTP_CLIENT_TIMEOUT: "30s"
+      HTTP_CLIENT_MAX_IDLE_CONNS: "100"
+      HTTP_CLIENT_MAX_CONNS_PER_HOST: "10"
+
+      # Rate Limiting
+      RATE_LIMIT_REQUESTS_PER_SECOND: "1000"
+      RATE_LIMIT_BURST: "2000"
+
+      # Logging
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
+
+      # Environment
+      ENVIRONMENT: "production"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - gps-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gps-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - gps-network
+    restart: unless-stopped
+    depends_on:
+      - app
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gps-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - gps-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+networks:
+  gps-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  mysql-data:
+  prometheus-data:
+  grafana-data:
+

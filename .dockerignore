@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+README.md
+
+# Tests
+tests/
+*_test.go
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
+!.env.example
+env.example
+
+# Build artifacts
+gps-receiver
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Dependencies (will be downloaded during build)
+vendor/
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Monitoring configs (not needed in build)
+prometheus.yml
+grafana/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Misc
+tmp/
+temp/
+*.log
+*.zip
+*.tar
+*.tar.gz
+.DS_Store
+Thumbs.db
+

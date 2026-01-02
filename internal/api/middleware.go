@@ -1,0 +1,214 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/gps-data-receiver/internal/metrics"
+	"github.com/gps-data-receiver/pkg/logger"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
+)
+
+// RequestIDMiddleware adds a unique request ID to each request
+func RequestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
+		c.Set("request_id", requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// LoggingMiddleware logs request details and records metrics
+func LoggingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		method := c.Request.Method
+
+		requestID, _ := c.Get("request_id")
+		
+		// Track active requests
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.HTTPActiveRequests.Inc()
+			defer metrics.AppMetrics.HTTPActiveRequests.Dec()
+		}
+
+		logger.Info("Incoming request",
+			zap.String("request_id", requestID.(string)),
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.String("client_ip", c.ClientIP()))
+
+		c.Next()
+
+		duration := time.Since(start)
+		statusCode := c.Writer.Status()
+		requestSize := int(c.Request.ContentLength)
+		responseSize := c.Writer.Size()
+
+		logger.Info("Request completed",
+			zap.String("request_id", requestID.(string)),
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.Int("status", statusCode),
+			zap.Duration("duration", duration),
+			zap.Int("response_size", responseSize))
+		
+		// Record metrics
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.RecordHTTPRequest(
+				method,
+				path,
+				fmt.Sprintf("%d", statusCode),
+				duration,
+				requestSize,
+				responseSize,
+			)
+		}
+	}
+}
+
+// RecoveryMiddleware recovers from panics
+func RecoveryMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				requestID, _ := c.Get("request_id")
+				
+				logger.Error("Panic recovered",
+					zap.String("request_id", requestID.(string)),
+					zap.Any("error", err),
+					zap.String("path", c.Request.URL.Path))
+
+				c.JSON(500, gin.H{
+					"error":      "Internal server error",
+					"request_id": requestID,
+				})
+				c.Abort()
+			}
+		}()
+		c.Next()
+	}
+}
+
+// RateLimiter holds rate limiting configuration per IP
+type RateLimiter struct {
+	limiters map[string]*rate.Limiter
+	mu       sync.RWMutex
+	rate     rate.Limit
+	burst    int
+}
+
+// NewRateLimiter creates a new rate limiter
+func NewRateLimiter(requestsPerSecond, burst int) *RateLimiter {
+	return &RateLimiter{
+		limiters: make(map[string]*rate.Limiter),
+		rate:     rate.Limit(requestsPerSecond),
+		burst:    burst,
+	}
+}
+
+// getLimiter gets or creates a limiter for an IP
+func (rl *RateLimiter) getLimiter(ip string) *rate.Limiter {
+	rl.mu.RLock()
+	limiter, exists := rl.limiters[ip]
+	rl.mu.RUnlock()
+
+	if exists {
+		return limiter
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	limiter, exists = rl.limiters[ip]
+	if exists {
+		return limiter
+	}
+
+	limiter = rate.NewLimiter(rl.rate, rl.burst)
+	rl.limiters[ip] = limiter
+
+	return limiter
+}
+
+// RateLimitMiddleware implements per-IP rate limiting
+func RateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		limiter := rl.getLimiter(ip)
+
+		if !limiter.Allow() {
+			requestID, _ := c.Get("request_id")
+			
+			logger.Warn("Rate limit exceeded",
+				zap.String("request_id", requestID.(string)),
+				zap.String("client_ip", ip))
+			
+			// Record rate limit hit
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordRateLimitHit(ip)
+			}
+
+			c.JSON(429, gin.H{
+				"error":      "Too many requests",
+				"request_id": requestID,
+			})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// TimeoutMiddleware adds a timeout to requests
+func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(c.Request.Context())
+		c.Next()
+	}
+}
+
+// ContentTypeMiddleware validates Content-Type header
+func ContentTypeMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
+			contentType := c.GetHeader("Content-Type")
+			if contentType != "application/json" && contentType != "" {
+				requestID, _ := c.Get("request_id")
+				
+				logger.Warn("Invalid Content-Type",
+					zap.String("request_id", requestID.(string)),
+					zap.String("content_type", contentType))
+
+				c.JSON(400, gin.H{
+					"error":      "Content-Type must be application/json",
+					"request_id": requestID,
+				})
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
+// RequestSizeLimitMiddleware limits the size of request bodies
+func RequestSizeLimitMiddleware(maxSize int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize)
+		c.Next()
+	}
+}
+
