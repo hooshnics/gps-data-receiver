@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.4
 # Multi-stage build for optimal image size and fast builds
 
 # Stage 1: Build
@@ -12,18 +11,14 @@ WORKDIR /app
 # Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
 
-# Download dependencies with BuildKit cache mount (much faster on rebuilds)
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
+# Download dependencies
+RUN go mod download
 
 # Copy source code (this layer will invalidate only when source changes)
 COPY . .
 
-# Build with cache mounts and optimizations
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Build with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -trimpath \
     -o /app/gps-receiver \

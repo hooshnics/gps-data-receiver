@@ -90,14 +90,14 @@ deps: ## Download Go dependencies
 	$(GOMOD) download
 	@echo "Dependencies downloaded"
 
-docker-build: ## Build Docker image with BuildKit (faster)
-	@echo "Building Docker image with BuildKit..."
-	DOCKER_BUILDKIT=1 docker build -t gps-receiver:latest .
+docker-build: ## Build Docker image
+	@echo "Building Docker image..."
+	docker build -t gps-receiver:latest .
 	@echo "Docker image built: gps-receiver:latest"
 
-docker-up: ## Start all services with docker-compose (uses BuildKit)
-	@echo "Starting services with BuildKit..."
-	DOCKER_BUILDKIT=1 docker-compose up -d --build
+docker-up: ## Start all services with docker-compose
+	@echo "Starting services..."
+	docker-compose up -d --build
 	@echo "Services started. Use 'make docker-logs' to view logs"
 	@echo "Health check: curl http://localhost:8080/health"
 

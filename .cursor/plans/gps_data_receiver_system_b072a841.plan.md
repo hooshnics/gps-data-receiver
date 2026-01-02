@@ -307,6 +307,3 @@ gps-data-receiver/
 5. **Circuit breaker**: Prevents wasting resources on consistently failing servers
 6. **MySQL for failures**: Durable storage for investigation and potential replay
 7. **Connection pooling**: Critical for 10k+ req/min throughput
-8. **Graceful shutdown**: Ensures in-flight packets are processed before termination
-
-## Testing Coverage Goals
