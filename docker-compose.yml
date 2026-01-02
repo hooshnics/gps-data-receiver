@@ -43,6 +43,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Enable BuildKit for faster builds with cache
+      args:
+        BUILDKIT_INLINE_CACHE: 1
     container_name: gps-receiver
     ports:
       - "8080:8080"
