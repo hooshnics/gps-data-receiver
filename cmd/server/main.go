@@ -73,10 +73,10 @@ func main() {
 	// Create message handler that sends data and handles failures
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
-		
+
 		// Send data with retry logic
 		result := httpSender.Send(ctx, data)
-		
+
 		// Record processing metrics
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordQueueProcessing(time.Since(start))
@@ -124,7 +124,7 @@ func main() {
 	// Start consumer workers
 	consumer.Start()
 	logger.Info("Worker pool started", zap.Int("workers", cfg.Worker.Count))
-	
+
 	// Update worker metrics
 	if metrics.AppMetrics != nil {
 		metrics.AppMetrics.UpdateWorkerMetrics(cfg.Worker.Count, 0)
@@ -158,10 +158,10 @@ func main() {
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	router.GET("/health", handler.Health)
 	router.GET("/ready", handler.Ready)
-	
+
 	// Prometheus metrics endpoint
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
-	
+
 	// Monitoring endpoints
 	router.GET("/monitoring/requests", handler.ListRequests)
 	router.GET("/monitoring/requests/:id", handler.GetRequestDetails)
@@ -181,35 +181,35 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			// Update queue depth
 			if metrics.AppMetrics != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
 				cancel()
-				
+
 				if err == nil {
 					metrics.AppMetrics.UpdateQueueDepth(queueLen)
 				}
-				
+
 				// Update failed packets count
 				ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 				failedCount, err := repository.Count(ctx2)
 				cancel2()
-				
+
 				if err == nil {
 					metrics.AppMetrics.UpdateFailedPacketsInDB(failedCount)
 				}
 			}
 		}
 	}()
-	
+
 	// Start background request tracker cleanup
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			if tracking.GlobalTracker != nil {
 				removed := tracking.GlobalTracker.Cleanup(30 * time.Minute)
@@ -249,4 +249,3 @@ func main() {
 
 	logger.Info("Server exited gracefully")
 }
-

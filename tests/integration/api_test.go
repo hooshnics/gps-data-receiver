@@ -181,4 +181,3 @@ func TestAPIIntegration_HealthCheck(t *testing.T) {
 
 	assert.Equal(t, "healthy", response["status"])
 }
-

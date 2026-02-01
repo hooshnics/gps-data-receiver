@@ -19,14 +19,14 @@ func TestSenderIntegration_SuccessfulSend(t *testing.T) {
 	requestCount := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&requestCount, 1)
-		
+
 		// Verify request
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		
+
 		body, _ := io.ReadAll(r.Body)
 		assert.NotEmpty(t, body)
-		
+
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"received"}`))
 	}))
@@ -68,7 +68,7 @@ func TestSenderIntegration_RetryOnFailure(t *testing.T) {
 	requestCount := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := atomic.AddInt32(&requestCount, 1)
-		
+
 		if count <= 2 {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error":"server error"}`))
@@ -241,4 +241,3 @@ func TestSenderIntegration_Timeout(t *testing.T) {
 	assert.NotNil(t, result.Error)
 	assert.Contains(t, result.Error.Error(), "context deadline exceeded")
 }
-

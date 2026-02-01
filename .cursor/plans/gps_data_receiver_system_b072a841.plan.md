@@ -306,4 +306,3 @@ gps-data-receiver/
 4. **Worker pool**: Fixed goroutine pool prevents resource exhaustion under high load
 5. **Circuit breaker**: Prevents wasting resources on consistently failing servers
 6. **MySQL for failures**: Durable storage for investigation and potential replay
-7. **Connection pooling**: Critical for 10k+ req/min throughput
