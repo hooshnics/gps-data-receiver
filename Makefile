@@ -122,6 +122,15 @@ docker-restart: ## Restart all services
 docker-ps: ## Show running containers
 	docker-compose ps
 
+grafana-reset-password: ## Reset Grafana admin password (use: make grafana-reset-password NEW_PASSWORD=yournewpassword)
+	@if [ -z "$(NEW_PASSWORD)" ]; then \
+		echo "Error: Set NEW_PASSWORD. Example: make grafana-reset-password NEW_PASSWORD=mynewpass"; \
+		exit 1; \
+	fi
+	@echo "Resetting Grafana admin password..."
+	docker-compose exec grafana grafana-cli admin reset-admin-password "$(NEW_PASSWORD)"
+	@echo "Password reset. Log in at http://localhost:3000 with admin / your new password."
+
 load-test: ## Run load test (requires hey, vegeta, or ab)
 	@echo "Running load test..."
 	@./scripts/load_test.sh

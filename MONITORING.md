@@ -28,6 +28,25 @@ docker-compose up -d
 2. Login with `admin` / `admin`
 3. Navigate to "Dashboards" → "GPS Data Receiver Dashboard"
 
+### Resetting Grafana password
+
+To reset the Grafana admin password (keeps existing dashboards and data):
+
+```bash
+# Replace yournewpassword with your desired password
+make grafana-reset-password NEW_PASSWORD=yournewpassword
+```
+
+Requires the Grafana container to be running (`docker-compose up -d`). Then log in at http://localhost:3000 with username `admin` and your new password.
+
+To start with a completely fresh Grafana and the default password from `docker-compose.yml` (admin/admin), remove the Grafana volume and recreate:
+
+```bash
+docker-compose stop grafana
+docker volume rm gps-data-receiver_grafana-data 2>/dev/null || true
+docker-compose up -d grafana
+```
+
 ### Dashboard Panels
 
 #### 1. Overview Section
