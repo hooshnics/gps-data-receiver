@@ -131,6 +131,38 @@ grafana-reset-password: ## Reset Grafana admin password (use: make grafana-reset
 	docker-compose exec grafana grafana-cli admin reset-admin-password "$(NEW_PASSWORD)"
 	@echo "Password reset. Log in at http://localhost:3000 with admin / your new password."
 
+test-prometheus: ## Test Prometheus connectivity
+	@echo "Testing Prometheus connectivity..."
+	@echo "\n1. Testing from host machine:"
+	@curl -s http://localhost:9090/-/healthy && echo "✓ Prometheus is healthy" || echo "✗ Prometheus is not responding"
+	@echo "\n2. Testing metrics endpoint from host:"
+	@curl -s http://localhost:8080/metrics | head -n 5 && echo "✓ Metrics endpoint accessible" || echo "✗ Metrics endpoint not accessible"
+	@echo "\n3. Testing from Prometheus container:"
+	@docker exec gps-prometheus wget -q -O- http://app:8080/metrics | head -n 5 && echo "✓ Prometheus can reach app" || echo "✗ Prometheus cannot reach app"
+	@echo "\n4. Checking Prometheus targets:"
+	@echo "Visit: http://localhost:9090/targets"
+
+test-grafana: ## Test Grafana and Prometheus datasource
+	@echo "Testing Grafana connectivity..."
+	@echo "\n1. Testing Grafana health:"
+	@curl -s http://localhost:3000/api/health && echo "\n✓ Grafana is healthy" || echo "\n✗ Grafana is not responding"
+	@echo "\n2. Testing Grafana datasources:"
+	@curl -s -u admin:admin http://localhost:3000/api/datasources && echo "\n✓ Datasources configured" || echo "\n✗ Cannot access datasources"
+	@echo "\n3. Testing Prometheus from Grafana container:"
+	@docker exec gps-grafana wget -q -O- http://prometheus:9090/-/healthy && echo "✓ Grafana can reach Prometheus" || echo "✗ Grafana cannot reach Prometheus"
+	@echo "\nGrafana UI: http://localhost:3000 (admin/admin)"
+
+debug-cors: ## Debug CORS issues between Grafana and Prometheus
+	@echo "Debugging CORS issues..."
+	@echo "\n1. Checking Prometheus CORS configuration:"
+	@docker exec gps-prometheus ps aux | grep prometheus
+	@echo "\n2. Testing Prometheus API from Grafana container:"
+	@docker exec gps-grafana wget -q -O- --header="Origin: http://localhost:3000" http://prometheus:9090/api/v1/query?query=up 2>&1 | head -n 10
+	@echo "\n3. Checking network connectivity:"
+	@docker exec gps-grafana ping -c 2 prometheus
+	@echo "\n4. Checking Grafana datasource configuration:"
+	@docker exec gps-grafana cat /etc/grafana/provisioning/datasources/prometheus.yml
+
 load-test: ## Run load test (requires hey, vegeta, or ab)
 	@echo "Running load test..."
 	@./scripts/load_test.sh
