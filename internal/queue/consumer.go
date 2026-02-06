@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gps-data-receiver/pkg/logger"
@@ -24,13 +25,14 @@ type Consumer struct {
 	wg             sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
+	activeWorkers  atomic.Int32 // Track active workers count
 }
 
 // NewConsumer creates a new consumer
 func NewConsumer(queue *RedisQueue, workerCount, batchSize int, handler MessageHandler) *Consumer {
 	ctx, cancel := context.WithCancel(context.Background())
 	
-	return &Consumer{
+	c := &Consumer{
 		queue:          queue,
 		workerCount:    workerCount,
 		batchSize:      batchSize,
@@ -39,18 +41,25 @@ func NewConsumer(queue *RedisQueue, workerCount, batchSize int, handler MessageH
 		ctx:            ctx,
 		cancel:         cancel,
 	}
+	c.activeWorkers.Store(0)
+	
+	return c
 }
 
 // Start starts the consumer workers
 func (c *Consumer) Start() {
 	logger.Info("Starting consumer workers",
 		zap.Int("worker_count", c.workerCount),
-		zap.Int("batch_size", c.batchSize))
+		zap.Int("batch_size", c.batchSize),
+		zap.String("consumer_prefix", c.consumerPrefix))
 
 	for i := 0; i < c.workerCount; i++ {
 		c.wg.Add(1)
 		go c.worker(i)
 	}
+	
+	logger.Info("All consumer workers started successfully",
+		zap.Int("worker_count", c.workerCount))
 }
 
 // Stop gracefully stops all workers
@@ -64,6 +73,15 @@ func (c *Consumer) Stop() {
 // worker is the main worker loop
 func (c *Consumer) worker(workerID int) {
 	defer c.wg.Done()
+	
+	// Panic recovery to prevent worker crashes
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Worker panic recovered",
+				zap.Int("worker_id", workerID),
+				zap.Any("panic", r))
+		}
+	}()
 
 	consumerName := fmt.Sprintf("%s-%d", c.consumerPrefix, workerID)
 	logger.Info("Worker started", zap.Int("worker_id", workerID), zap.String("consumer", consumerName))
@@ -74,7 +92,18 @@ func (c *Consumer) worker(workerID int) {
 			logger.Info("Worker shutting down", zap.Int("worker_id", workerID))
 			return
 		default:
-			c.processMessages(workerID, consumerName)
+			// Wrap processMessages in a recovery block to handle any panics
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("Panic in processMessages",
+							zap.Int("worker_id", workerID),
+							zap.Any("panic", r))
+						time.Sleep(1 * time.Second) // Back off before retrying
+					}
+				}()
+				c.processMessages(workerID, consumerName)
+			}()
 		}
 	}
 }
@@ -105,6 +134,7 @@ func (c *Consumer) processMessages(workerID int, consumerName string) {
 		}
 		logger.Error("Failed to read from stream",
 			zap.Int("worker_id", workerID),
+			zap.String("consumer", consumerName),
 			zap.Error(err))
 		time.Sleep(1 * time.Second) // Back off on error
 		return
@@ -113,13 +143,25 @@ func (c *Consumer) processMessages(workerID int, consumerName string) {
 	// Process each message
 	for _, stream := range streams {
 		for _, message := range stream.Messages {
-			c.handleMessage(workerID, message)
+			// Check if context is cancelled before processing
+			select {
+			case <-c.ctx.Done():
+				logger.Info("Worker stopping, skipping remaining messages",
+					zap.Int("worker_id", workerID))
+				return
+			default:
+				c.handleMessage(workerID, message)
+			}
 		}
 	}
 }
 
 // handleMessage processes a single message
 func (c *Consumer) handleMessage(workerID int, message redis.XMessage) {
+	// Mark worker as active
+	c.activeWorkers.Add(1)
+	defer c.activeWorkers.Add(-1)
+	
 	// Extract data from message
 	dataInterface, ok := message.Values["data"]
 	if !ok {
@@ -182,5 +224,15 @@ func (c *Consumer) ackMessage(messageID string) {
 			zap.String("message_id", messageID),
 			zap.Error(err))
 	}
+}
+
+// GetActiveWorkerCount returns the current number of active workers
+func (c *Consumer) GetActiveWorkerCount() int {
+	return int(c.activeWorkers.Load())
+}
+
+// GetWorkerPoolSize returns the total number of workers in the pool
+func (c *Consumer) GetWorkerPoolSize() int {
+	return c.workerCount
 }
 
