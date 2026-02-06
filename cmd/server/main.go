@@ -182,6 +182,8 @@ func main() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
+		lastFailedUpdate := time.Time{}
+
 		for range ticker.C {
 			if metrics.AppMetrics != nil {
 				// Update worker metrics with actual active worker count
@@ -208,7 +210,8 @@ func main() {
 				}
 
 				// Update failed packets count (less frequently to reduce DB load)
-				if time.Now().Unix()%2 == 0 { // Every 10 seconds
+				if time.Since(lastFailedUpdate) >= 10*time.Second {
+					lastFailedUpdate = time.Now()
 					ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 					failedCount, err := repository.Count(ctx2)
 					cancel2()
