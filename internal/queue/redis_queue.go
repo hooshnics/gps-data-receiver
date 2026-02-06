@@ -48,13 +48,22 @@ func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
 	defer cancel2()
 	
 	err := client.XGroupCreateMkStream(ctx2, queue.streamName, queue.consumerGroup, "0").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-		logger.Warn("Failed to create consumer group (may already exist)", zap.Error(err))
+	if err != nil {
+		if err.Error() == "BUSYGROUP Consumer Group name already exists" {
+			logger.Info("Consumer group already exists (this is normal)", 
+				zap.String("consumer_group", queue.consumerGroup))
+		} else {
+			logger.Warn("Failed to create consumer group", zap.Error(err))
+		}
+	} else {
+		logger.Info("Consumer group created successfully",
+			zap.String("consumer_group", queue.consumerGroup))
 	}
 
 	logger.Info("Redis queue initialized",
 		zap.String("stream", queue.streamName),
-		zap.String("consumer_group", queue.consumerGroup))
+		zap.String("consumer_group", queue.consumerGroup),
+		zap.Int64("max_len", queue.maxLen))
 
 	return queue, nil
 }

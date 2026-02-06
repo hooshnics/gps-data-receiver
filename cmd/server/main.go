@@ -125,7 +125,7 @@ func main() {
 	consumer.Start()
 	logger.Info("Worker pool started", zap.Int("workers", cfg.Worker.Count))
 
-	// Update worker metrics
+	// Initialize worker metrics with correct pool size
 	if metrics.AppMetrics != nil {
 		metrics.AppMetrics.UpdateWorkerMetrics(cfg.Worker.Count, 0)
 	}
@@ -177,29 +177,45 @@ func main() {
 		MaxHeaderBytes: 1 << 20, // 1MB
 	}
 
-	// Start background metrics updater
+	// Start background metrics updater (more frequent updates for better monitoring)
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			// Update queue depth
 			if metrics.AppMetrics != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// Update worker metrics with actual active worker count
+				activeWorkers := consumer.GetActiveWorkerCount()
+				metrics.AppMetrics.UpdateWorkerMetrics(cfg.Worker.Count, activeWorkers)
+				
+				// Log warning if no workers are active but queue has items
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
 				cancel()
 
 				if err == nil {
 					metrics.AppMetrics.UpdateQueueDepth(queueLen)
+					
+					// Health check: warn if queue is growing but no workers are active
+					if queueLen > 100 && activeWorkers == 0 {
+						logger.Warn("Queue depth high but no active workers",
+							zap.Int64("queue_depth", queueLen),
+							zap.Int("active_workers", activeWorkers),
+							zap.Int("pool_size", cfg.Worker.Count))
+					}
+				} else {
+					logger.Error("Failed to get queue length", zap.Error(err))
 				}
 
-				// Update failed packets count
-				ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-				failedCount, err := repository.Count(ctx2)
-				cancel2()
+				// Update failed packets count (less frequently to reduce DB load)
+				if time.Now().Unix()%2 == 0 { // Every 10 seconds
+					ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+					failedCount, err := repository.Count(ctx2)
+					cancel2()
 
-				if err == nil {
-					metrics.AppMetrics.UpdateFailedPacketsInDB(failedCount)
+					if err == nil {
+						metrics.AppMetrics.UpdateFailedPacketsInDB(failedCount)
+					}
 				}
 			}
 		}
