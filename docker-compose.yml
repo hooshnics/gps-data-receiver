@@ -150,9 +150,9 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=https://monitoring.hooshnics.com
-      - GF_SERVER_DOMAIN=monitoring.hooshnics.com
-      - GF_SERVER_PROTOCOL=https
+      - GF_SERVER_ROOT_URL=${GRAFANA_SERVER_ROOT_URL}
+      - GF_SERVER_DOMAIN=${GRAFANA_SERVER_DOMAIN}
+      - GF_SERVER_PROTOCOL=${GRAFANA_SERVER_PROTOCOL}
       - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - grafana-data:/var/lib/grafana
