@@ -21,6 +21,11 @@ REDIS_HOST ?= localhost
 REDIS_PORT ?= 6379
 REDIS_DB ?= 0
 
+# MySQL defaults (override via environment)
+MYSQL_HOST ?= localhost
+MYSQL_PORT ?= 3306
+MYSQL_DATABASE ?= gps_receiver
+
 help: ## Display this help message
 	@echo "GPS Data Receiver - Makefile Commands"
 	@echo "======================================"
@@ -185,19 +190,19 @@ flush-queue: ## Flush the entire Redis queue
 	fi
 	@echo "Redis queue flushed successfully."
 
-flush-database: ## Flush the entire Redis database (all databases)
-	@echo "WARNING: This will flush ALL Redis databases!"
-	@echo "Flushing entire Redis database..."
-	@if docker-compose ps -q redis >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q redis)" ]; then \
-		docker-compose exec -T redis redis-cli FLUSHALL; \
-	elif command -v redis-cli >/dev/null 2>&1; then \
-		redis-cli -h $(REDIS_HOST) -p $(REDIS_PORT) FLUSHALL; \
+flush-database: ## Flush the entire MySQL database
+	@echo "WARNING: This will drop and recreate the $(MYSQL_DATABASE) database!"
+	@echo "Flushing MySQL database..."
+	@if docker-compose ps -q mysql >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q mysql)" ]; then \
+		docker-compose exec -T mysql mysql -u root -prootpass -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
+	elif command -v mysql >/dev/null 2>&1; then \
+		mysql -h $(MYSQL_HOST) -P $(MYSQL_PORT) -u root -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
 	else \
-		echo "Error: redis-cli not found and redis container not running."; \
-		echo "Start Redis with docker-compose or install redis-cli."; \
+		echo "Error: mysql client not found and mysql container not running."; \
+		echo "Start MySQL with docker-compose or install mysql client."; \
 		exit 1; \
 	fi
-	@echo "All Redis databases flushed successfully."
+	@echo "MySQL database flushed successfully."
 
 install-tools: ## Install development tools
 	@echo "Installing development tools..."
