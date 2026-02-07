@@ -267,10 +267,26 @@ func (m *Metrics) UpdateFailedPacketsInDB(count int64) {
 	m.FailedPacketsInDB.Set(float64(count))
 }
 
-// UpdateWorkerMetrics updates worker pool metrics
-func (m *Metrics) UpdateWorkerMetrics(poolSize, activeCount int) {
+// SetWorkerPoolSize updates worker pool size metric
+func (m *Metrics) SetWorkerPoolSize(poolSize int) {
 	m.WorkerPoolSize.Set(float64(poolSize))
-	m.WorkerActiveCount.Set(float64(activeCount))
-	m.WorkerIdleCount.Set(float64(poolSize - activeCount))
+}
+
+// InitWorkerCounts initializes worker pool metrics
+func (m *Metrics) InitWorkerCounts(poolSize int) {
+	m.WorkerPoolSize.Set(float64(poolSize))
+	m.WorkerIdleCount.Set(float64(poolSize))
+}
+
+// IncActiveWorker increments active worker count and decrements idle count
+func (m *Metrics) IncActiveWorker() {
+	m.WorkerActiveCount.Inc()
+	m.WorkerIdleCount.Dec()
+}
+
+// DecActiveWorker decrements active worker count and increments idle count
+func (m *Metrics) DecActiveWorker() {
+	m.WorkerActiveCount.Dec()
+	m.WorkerIdleCount.Inc()
 }
 

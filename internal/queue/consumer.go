@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/pkg/logger"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -161,6 +162,12 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) {
 	// Mark worker as active
 	c.activeWorkers.Add(1)
 	defer c.activeWorkers.Add(-1)
+	
+	// Update Prometheus metrics directly
+	if metrics.AppMetrics != nil {
+		metrics.AppMetrics.IncActiveWorker()
+		defer metrics.AppMetrics.DecActiveWorker()
+	}
 	
 	// Extract data from message
 	dataInterface, ok := message.Values["data"]
