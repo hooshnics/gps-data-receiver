@@ -127,7 +127,7 @@ func main() {
 
 	// Initialize worker metrics with correct pool size
 	if metrics.AppMetrics != nil {
-		metrics.AppMetrics.UpdateWorkerMetrics(cfg.Worker.Count, 0)
+		metrics.AppMetrics.InitWorkerCounts(cfg.Worker.Count)
 	}
 
 	// Setup Gin router
@@ -186,9 +186,11 @@ func main() {
 
 		for range ticker.C {
 			if metrics.AppMetrics != nil {
-				// Update worker metrics with actual active worker count
+				// Update worker pool size
+				metrics.AppMetrics.SetWorkerPoolSize(cfg.Worker.Count)
+				
+				// Active workers count is updated directly by workers
 				activeWorkers := consumer.GetActiveWorkerCount()
-				metrics.AppMetrics.UpdateWorkerMetrics(cfg.Worker.Count, activeWorkers)
 				
 				// Log warning if no workers are active but queue has items
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
