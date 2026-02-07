@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test clear-queue-cache
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database
 
 # Default target
 .DEFAULT_GOAL := help
@@ -172,8 +172,8 @@ load-test: ## Run load test (requires hey, vegeta, or ab)
 	@echo "Running load test..."
 	@./scripts/load_test.sh
 
-clear-queue-cache: ## Clear Redis queue and cache
-	@echo "Clearing Redis queue and cache..."
+flush-queue: ## Flush the entire Redis queue
+	@echo "Flushing Redis queue..."
 	@if docker-compose ps -q redis >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q redis)" ]; then \
 		docker-compose exec -T redis redis-cli -n $(REDIS_DB) FLUSHDB; \
 	elif command -v redis-cli >/dev/null 2>&1; then \
@@ -183,7 +183,21 @@ clear-queue-cache: ## Clear Redis queue and cache
 		echo "Start Redis with docker-compose or install redis-cli."; \
 		exit 1; \
 	fi
-	@echo "Redis queue and cache cleared."
+	@echo "Redis queue flushed successfully."
+
+flush-database: ## Flush the entire Redis database (all databases)
+	@echo "WARNING: This will flush ALL Redis databases!"
+	@echo "Flushing entire Redis database..."
+	@if docker-compose ps -q redis >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q redis)" ]; then \
+		docker-compose exec -T redis redis-cli FLUSHALL; \
+	elif command -v redis-cli >/dev/null 2>&1; then \
+		redis-cli -h $(REDIS_HOST) -p $(REDIS_PORT) FLUSHALL; \
+	else \
+		echo "Error: redis-cli not found and redis container not running."; \
+		echo "Start Redis with docker-compose or install redis-cli."; \
+		exit 1; \
+	fi
+	@echo "All Redis databases flushed successfully."
 
 install-tools: ## Install development tools
 	@echo "Installing development tools..."
