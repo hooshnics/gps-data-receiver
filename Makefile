@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test clear-queue-cache
 
 # Default target
 .DEFAULT_GOAL := help
@@ -15,6 +15,11 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
+
+# Redis defaults (override via environment)
+REDIS_HOST ?= localhost
+REDIS_PORT ?= 6379
+REDIS_DB ?= 0
 
 help: ## Display this help message
 	@echo "GPS Data Receiver - Makefile Commands"
@@ -166,6 +171,19 @@ debug-cors: ## Debug CORS issues between Grafana and Prometheus
 load-test: ## Run load test (requires hey, vegeta, or ab)
 	@echo "Running load test..."
 	@./scripts/load_test.sh
+
+clear-queue-cache: ## Clear Redis queue and cache
+	@echo "Clearing Redis queue and cache..."
+	@if docker-compose ps -q redis >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q redis)" ]; then \
+		docker-compose exec -T redis redis-cli -n $(REDIS_DB) FLUSHDB; \
+	elif command -v redis-cli >/dev/null 2>&1; then \
+		redis-cli -h $(REDIS_HOST) -p $(REDIS_PORT) -n $(REDIS_DB) FLUSHDB; \
+	else \
+		echo "Error: redis-cli not found and redis container not running."; \
+		echo "Start Redis with docker-compose or install redis-cli."; \
+		exit 1; \
+	fi
+	@echo "Redis queue and cache cleared."
 
 install-tools: ## Install development tools
 	@echo "Installing development tools..."
