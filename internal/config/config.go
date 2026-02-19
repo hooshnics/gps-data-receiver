@@ -32,13 +32,14 @@ type ServerConfig struct {
 
 // RedisConfig holds Redis configuration
 type RedisConfig struct {
-	Host          string
-	Port          string
-	Password      string
-	DB            int
-	StreamName    string
-	ConsumerGroup string
-	MaxLen        int64
+	Host                   string
+	Port                   string
+	Password               string
+	DB                     int
+	StreamName             string
+	ConsumerGroup          string
+	MaxLen                 int64
+	QueueBackpressureLimit int64 // Reject new items when depth >= this (0 = use 90% of MaxLen)
 }
 
 // MySQLConfig holds MySQL configuration
@@ -99,13 +100,14 @@ func Load() (*Config, error) {
 			MaxRequestSize: getInt64("MAX_REQUEST_SIZE", 1048576), // 1MB default
 		},
 		Redis: RedisConfig{
-			Host:          getEnv("REDIS_HOST", "localhost"),
-			Port:          getEnv("REDIS_PORT", "6379"),
-			Password:      getEnv("REDIS_PASSWORD", ""),
-			DB:            getInt("REDIS_DB", 0),
-			StreamName:    getEnv("REDIS_STREAM_NAME", "gps:reports"),
-			ConsumerGroup: getEnv("REDIS_CONSUMER_GROUP", "gps-workers"),
-			MaxLen:        getInt64("REDIS_MAX_LEN", 10000),
+			Host:                   getEnv("REDIS_HOST", "localhost"),
+			Port:                   getEnv("REDIS_PORT", "6379"),
+			Password:               getEnv("REDIS_PASSWORD", ""),
+			DB:                     getInt("REDIS_DB", 0),
+			StreamName:             getEnv("REDIS_STREAM_NAME", "gps:reports"),
+			ConsumerGroup:          getEnv("REDIS_CONSUMER_GROUP", "gps-workers"),
+			MaxLen:                 getInt64("REDIS_MAX_LEN", 10000),
+			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
 		},
 		MySQL: MySQLConfig{
 			Host:            getEnv("MYSQL_HOST", "localhost"),

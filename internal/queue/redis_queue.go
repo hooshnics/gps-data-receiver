@@ -110,3 +110,13 @@ func (q *RedisQueue) GetConsumerGroup() string {
 	return q.consumerGroup
 }
 
+// GetMaxLen returns the maximum stream length (for backpressure)
+func (q *RedisQueue) GetMaxLen() int64 {
+	return q.maxLen
+}
+
+// Len returns the current number of entries in the stream (queue depth)
+func (q *RedisQueue) Len(ctx context.Context) (int64, error) {
+	return q.client.XLen(ctx, q.streamName).Result()
+}
+
