@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/metrics"
@@ -14,13 +17,15 @@ import (
 
 // Handler handles HTTP requests
 type Handler struct {
-	queue *queue.RedisQueue
+	queue               *queue.RedisQueue
+	backpressureLimit    int64 // 0 = use 90% of queue max len
 }
 
-// NewHandler creates a new handler
-func NewHandler(q *queue.RedisQueue) *Handler {
+// NewHandler creates a new handler. backpressureLimit is the queue depth at which to return 503 (0 = 90% of Redis MaxLen).
+func NewHandler(q *queue.RedisQueue, backpressureLimit int64) *Handler {
 	return &Handler{
-		queue: q,
+		queue:            q,
+		backpressureLimit: backpressureLimit,
 	}
 }
 
@@ -58,6 +63,33 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 			"error": "Request body is empty",
 		})
 		return
+	}
+
+	// Backpressure: reject when queue is too full so we don't fill up and lose messages
+	limit := h.backpressureLimit
+	if limit <= 0 {
+		limit = (h.queue.GetMaxLen() * 9) / 10 // 90% of max
+	}
+	if limit > 0 {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		depth, errLen := h.queue.Len(ctx)
+		cancel()
+		if errLen == nil && depth >= limit {
+			logger.Warn("Queue backpressure: rejecting request",
+				zap.Int64("queue_depth", depth),
+				zap.Int64("limit", limit))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordQueueEnqueue(false)
+			}
+			if tracking.GlobalTracker != nil && requestID != "" {
+				tracking.GlobalTracker.UpdateStatus(requestID, tracking.StatusFailed, "Queue full (backpressure)")
+			}
+			c.Header("Retry-After", strconv.Itoa(5))
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "Queue is full, try again later",
+			})
+			return
+		}
 	}
 
 	// Enqueue to Redis (non-blocking)

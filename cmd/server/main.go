@@ -63,8 +63,10 @@ func main() {
 	}
 	defer mysql.Close()
 
-	// Initialize repository
+	// Initialize repository and async failed-packet saver (so workers are not blocked on DB)
 	repository := storage.NewFailedPacketRepository(mysql)
+	failedPacketSaver := storage.NewFailedPacketSaver(repository, 1000)
+	defer failedPacketSaver.Shutdown(15 * time.Second)
 
 	// Initialize HTTP sender
 	httpSender := sender.NewHTTPSender(cfg)
@@ -83,30 +85,18 @@ func main() {
 		}
 
 		if !result.Success {
-			// Save failed packet to database
-			logger.Error("Failed to send packet after all retries, saving to database",
+			logger.Error("Failed to send packet after all retries, saving to database (async)",
 				zap.String("target_server", result.TargetServer),
 				zap.Int("attempts", result.Attempt),
 				zap.Error(result.Error))
 
-			saveErr := repository.SaveFailedPacket(
-				ctx,
-				data,
-				result.Attempt,
-				result.Error.Error(),
-				result.TargetServer,
-			)
-
-			if saveErr != nil {
-				logger.Error("Failed to save failed packet to database",
-					zap.Error(saveErr))
-			} else {
-				// Record successful save
-				if metrics.AppMetrics != nil {
-					metrics.AppMetrics.RecordFailedPacketStored()
-				}
-			}
-
+			// Submit to async saver so this worker is not blocked on MySQL
+			failedPacketSaver.Submit(storage.FailedPacketJob{
+				Payload:      data,
+				RetryCount:   result.Attempt,
+				LastError:   result.Error.Error(),
+				TargetServer: result.TargetServer,
+			})
 			return result.Error
 		}
 
@@ -151,8 +141,8 @@ func main() {
 	router.Use(api.ContentTypeMiddleware())
 	router.Use(api.RequestSizeLimitMiddleware(cfg.Server.MaxRequestSize))
 
-	// Initialize handler
-	handler := api.NewHandler(redisQueue)
+	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit)
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
