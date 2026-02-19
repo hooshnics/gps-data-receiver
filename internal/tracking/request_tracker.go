@@ -1,7 +1,6 @@
 package tracking
 
 import (
-	"encoding/json"
 	"sync"
 	"time"
 )
@@ -25,7 +24,6 @@ type RequestInfo struct {
 	ReceivedAt      time.Time              `json:"received_at"`
 	ClientIP        string                 `json:"client_ip"`
 	PayloadSize     int                    `json:"payload_size"`
-	Payload         json.RawMessage        `json:"payload"`
 	Status          RequestStatus          `json:"status"`
 	QueuedAt        *time.Time             `json:"queued_at,omitempty"`
 	ProcessedAt     *time.Time             `json:"processed_at,omitempty"`
@@ -81,7 +79,6 @@ func (rt *RequestTracker) TrackRequest(requestID, clientIP string, payload []byt
 		ReceivedAt:    now,
 		ClientIP:      clientIP,
 		PayloadSize:   len(payload),
-		Payload:       json.RawMessage(payload),
 		Status:        StatusReceived,
 		StatusHistory: []StatusChange{
 			{

@@ -118,46 +118,75 @@ func RecoveryMiddleware() gin.HandlerFunc {
 	}
 }
 
+// rateLimiterEntry pairs a limiter with the time it was last accessed.
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // RateLimiter holds rate limiting configuration per IP
 type RateLimiter struct {
-	limiters map[string]*rate.Limiter
+	limiters map[string]*rateLimiterEntry
 	mu       sync.RWMutex
 	rate     rate.Limit
 	burst    int
 }
 
-// NewRateLimiter creates a new rate limiter
+// NewRateLimiter creates a new rate limiter and starts a background goroutine
+// that evicts entries not seen in the last 10 minutes.
 func NewRateLimiter(requestsPerSecond, burst int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	rl := &RateLimiter{
+		limiters: make(map[string]*rateLimiterEntry),
 		rate:     rate.Limit(requestsPerSecond),
 		burst:    burst,
 	}
+	go rl.cleanupLoop()
+	return rl
 }
 
 // getLimiter gets or creates a limiter for an IP
 func (rl *RateLimiter) getLimiter(ip string) *rate.Limiter {
+	now := time.Now()
+
 	rl.mu.RLock()
-	limiter, exists := rl.limiters[ip]
+	entry, exists := rl.limiters[ip]
 	rl.mu.RUnlock()
 
 	if exists {
-		return limiter
+		entry.lastSeen = now
+		return entry.limiter
 	}
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	limiter, exists = rl.limiters[ip]
+	entry, exists = rl.limiters[ip]
 	if exists {
-		return limiter
+		entry.lastSeen = now
+		return entry.limiter
 	}
 
-	limiter = rate.NewLimiter(rl.rate, rl.burst)
-	rl.limiters[ip] = limiter
+	limiter := rate.NewLimiter(rl.rate, rl.burst)
+	rl.limiters[ip] = &rateLimiterEntry{limiter: limiter, lastSeen: now}
 
 	return limiter
+}
+
+// cleanupLoop evicts stale entries every 5 minutes.
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-10 * time.Minute)
+		for ip, entry := range rl.limiters {
+			if entry.lastSeen.Before(cutoff) {
+				delete(rl.limiters, ip)
+			}
+		}
+		rl.mu.Unlock()
+	}
 }
 
 // RateLimitMiddleware implements per-IP rate limiting
