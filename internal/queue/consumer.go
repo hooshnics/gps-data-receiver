@@ -110,12 +110,9 @@ func (c *Consumer) worker(workerID int) {
 	}
 }
 
-// processMessages reads and processes a batch, then ACKs all successful messages in one pipeline call.
+// processMessages reads a batch and processes all messages concurrently, then batch-ACKs.
 func (c *Consumer) processMessages(workerID int, consumerName string) {
-	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-	defer cancel()
-
-	streams, err := c.queue.GetClient().XReadGroup(ctx, &redis.XReadGroupArgs{
+	streams, err := c.queue.GetClient().XReadGroup(c.ctx, &redis.XReadGroupArgs{
 		Group:    c.queue.GetConsumerGroup(),
 		Consumer: consumerName,
 		Streams:  []string{c.queue.GetStreamName(), ">"},
@@ -139,23 +136,44 @@ func (c *Consumer) processMessages(workerID int, consumerName string) {
 		if len(stream.Messages) == 0 {
 			continue
 		}
+		c.processBatchConcurrently(workerID, stream.Messages)
+	}
+}
 
-		ackIDs := make([]string, 0, len(stream.Messages))
+// processBatchConcurrently fans out message handling across goroutines, collects
+// completed IDs, and batch-ACKs them in a single Redis pipeline call.
+func (c *Consumer) processBatchConcurrently(workerID int, messages []redis.XMessage) {
+	var mu sync.Mutex
+	ackIDs := make([]string, 0, len(messages))
 
-		for _, message := range stream.Messages {
-			select {
-			case <-c.ctx.Done():
-				c.batchAck(ackIDs)
-				return
-			default:
-				if c.handleMessage(workerID, message) {
-					ackIDs = append(ackIDs, message.ID)
-				}
-			}
+	var batchWg sync.WaitGroup
+	for _, message := range messages {
+		if c.ctx.Err() != nil {
+			break
 		}
 
-		c.batchAck(ackIDs)
+		batchWg.Add(1)
+		go func(msg redis.XMessage) {
+			defer batchWg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("Panic handling message",
+						zap.Int("worker_id", workerID),
+						zap.String("message_id", msg.ID),
+						zap.Any("panic", r))
+				}
+			}()
+
+			if c.handleMessage(workerID, msg) {
+				mu.Lock()
+				ackIDs = append(ackIDs, msg.ID)
+				mu.Unlock()
+			}
+		}(message)
 	}
+
+	batchWg.Wait()
+	c.batchAck(ackIDs)
 }
 
 // handleMessage processes a single message and returns true if it should be ACKed.
@@ -189,7 +207,7 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) bool {
 		return true
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
 	defer cancel()
 
 	err := c.handler(ctx, data)
@@ -269,14 +287,7 @@ func (c *Consumer) claimStaleMessages(consumerName string) {
 	}
 
 	logger.Info("Reclaiming stale pending messages", zap.Int("count", len(messages)))
-
-	ackIDs := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		if c.handleMessage(-1, msg) {
-			ackIDs = append(ackIDs, msg.ID)
-		}
-	}
-	c.batchAck(ackIDs)
+	c.processBatchConcurrently(-1, messages)
 }
 
 // GetActiveWorkerCount returns the current number of active workers

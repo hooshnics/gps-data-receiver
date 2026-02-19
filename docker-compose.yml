@@ -82,17 +82,20 @@ services:
 
       # Worker Configuration
       WORKER_COUNT: "50"
-      WORKER_BATCH_SIZE: "10"
+      WORKER_BATCH_SIZE: "50"
 
       # Retry Configuration
-      MAX_RETRY_ATTEMPTS: "5"
-      RETRY_DELAY_FIRST: "5s"
-      RETRY_DELAY_SUBSEQUENT: "10s"
+      MAX_RETRY_ATTEMPTS: "3"
+      RETRY_DELAY_FIRST: "1s"
+      RETRY_DELAY_SUBSEQUENT: "2s"
 
       # HTTP Client Configuration
-      HTTP_CLIENT_TIMEOUT: "30s"
-      HTTP_CLIENT_MAX_IDLE_CONNS: "100"
-      HTTP_CLIENT_MAX_CONNS_PER_HOST: "10"
+      HTTP_CLIENT_TIMEOUT: "15s"
+      HTTP_CLIENT_MAX_IDLE_CONNS: "200"
+      HTTP_CLIENT_MAX_CONNS_PER_HOST: "60"
+
+      # Redis Pool Size
+      REDIS_POOL_SIZE: "200"
 
       # Rate Limiting
       RATE_LIMIT_REQUESTS_PER_SECOND: "1000"
