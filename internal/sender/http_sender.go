@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"time"
 
@@ -23,13 +26,20 @@ type HTTPSender struct {
 
 // NewHTTPSender creates a new HTTP sender
 func NewHTTPSender(cfg *config.Config) *HTTPSender {
-	// Create optimized HTTP client with connection pooling
 	transport := &http.Transport{
 		MaxIdleConns:        cfg.HTTP.MaxIdleConns,
 		MaxConnsPerHost:     cfg.HTTP.MaxConnsPerHost,
+		MaxIdleConnsPerHost: cfg.HTTP.MaxConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 		DisableCompression:  false,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 15 * time.Second,
+		WriteBufferSize:       32 * 1024,
+		ReadBufferSize:        32 * 1024,
 	}
 
 	client := &http.Client{
@@ -58,33 +68,34 @@ type SendResult struct {
 	Error        error
 }
 
-// Send sends data to a destination server with retry logic
+// Send sends data to destination servers with retry logic and exponential backoff.
+// Each retry rotates to the next server so a single unhealthy host doesn't block the worker.
 func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
-	for attempt := 1; attempt <= s.retryConfig.MaxAttempts; attempt++ {
-		// Get next server using round-robin
-		targetServer := s.loadBalancer.NextServer()
-		if targetServer == "" {
-			return &SendResult{
-				Success:      false,
-				TargetServer: "",
-				Attempt:      attempt,
-				Error:        fmt.Errorf("no servers available"),
-			}
+	serverCount := s.loadBalancer.ServerCount()
+	if serverCount == 0 {
+		return &SendResult{
+			Success: false,
+			Error:   fmt.Errorf("no servers available"),
 		}
+	}
 
-		// Attempt to send
+	var lastErr error
+	var lastServer string
+
+	for attempt := 1; attempt <= s.retryConfig.MaxAttempts; attempt++ {
+		targetServer := s.loadBalancer.NextServer()
+		lastServer = targetServer
+
 		sendStart := time.Now()
 		err := s.sendToServer(ctx, targetServer, data)
 		sendDuration := time.Since(sendStart)
-		
+
 		if err == nil {
-			// Success!
-			logger.Info("Message sent successfully",
+			logger.Debug("Message sent successfully",
 				zap.String("server", targetServer),
 				zap.Int("attempt", attempt),
 				zap.Int("payload_size", len(data)))
-			
-			// Record metrics
+
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordSenderRequest(targetServer, "success", sendDuration)
 			}
@@ -93,11 +104,11 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 				Success:      true,
 				TargetServer: targetServer,
 				Attempt:      attempt,
-				Error:        nil,
 			}
 		}
-		
-		// Record failed attempt
+
+		lastErr = err
+
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordSenderRequest(targetServer, "error", sendDuration)
 			if attempt > 1 {
@@ -105,34 +116,17 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 			}
 		}
 
-		// Log failure
 		logger.Warn("Failed to send message",
 			zap.String("server", targetServer),
 			zap.Int("attempt", attempt),
 			zap.Int("max_attempts", s.retryConfig.MaxAttempts),
 			zap.Error(err))
 
-		// If this was the last attempt, return failure
 		if attempt >= s.retryConfig.MaxAttempts {
-			// Record permanent failure
-			if metrics.AppMetrics != nil {
-				metrics.AppMetrics.RecordSenderFailure(targetServer)
-			}
-			
-			return &SendResult{
-				Success:      false,
-				TargetServer: targetServer,
-				Attempt:      attempt,
-				Error:        fmt.Errorf("max retry attempts reached: %w", err),
-			}
+			break
 		}
 
-		// Wait before retry
 		delay := s.getRetryDelay(attempt)
-		logger.Debug("Waiting before retry",
-			zap.Int("attempt", attempt),
-			zap.Duration("delay", delay))
-
 		select {
 		case <-ctx.Done():
 			return &SendResult{
@@ -142,55 +136,63 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 				Error:        fmt.Errorf("context cancelled: %w", ctx.Err()),
 			}
 		case <-time.After(delay):
-			// Continue to next attempt
 		}
 	}
 
-	// Should not reach here
+	if metrics.AppMetrics != nil {
+		metrics.AppMetrics.RecordSenderFailure(lastServer)
+	}
+
 	return &SendResult{
 		Success:      false,
-		TargetServer: "",
+		TargetServer: lastServer,
 		Attempt:      s.retryConfig.MaxAttempts,
-		Error:        fmt.Errorf("unexpected error in retry loop"),
+		Error:        fmt.Errorf("max retry attempts reached: %w", lastErr),
 	}
 }
 
 // sendToServer sends data to a specific server
 func (s *HTTPSender) sendToServer(ctx context.Context, serverURL string, data []byte) error {
-	// Create request
 	req, err := http.NewRequestWithContext(ctx, "POST", serverURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "GPS-Data-Receiver/1.0")
 
-	// Send request
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Read response body (for logging, limited)
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	// Discard body to allow connection reuse
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
-	// Check status code
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("server returned non-success status: %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("server returned non-success status: %d", resp.StatusCode)
 	}
 
 	return nil
 }
 
-// getRetryDelay calculates the delay before the next retry
+// getRetryDelay returns an exponentially increasing delay with jitter:
+// base * 2^(attempt-1) +-25%  (capped at 30s).
 func (s *HTTPSender) getRetryDelay(attempt int) time.Duration {
-	if attempt == 1 {
-		return s.retryConfig.DelayFirst
+	base := s.retryConfig.DelayFirst
+	exp := math.Pow(2, float64(attempt-1))
+	delay := time.Duration(float64(base) * exp)
+
+	const maxDelay = 30 * time.Second
+	if delay > maxDelay {
+		delay = maxDelay
 	}
-	return s.retryConfig.DelaySubsequent
+
+	jitter := float64(delay) * 0.25
+	delay = time.Duration(float64(delay) + (rand.Float64()*2-1)*jitter)
+
+	return delay
 }
 
 // Close closes the HTTP client
@@ -199,4 +201,3 @@ func (s *HTTPSender) Close() {
 		s.client.CloseIdleConnections()
 	}
 }
-
