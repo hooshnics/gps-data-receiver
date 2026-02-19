@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database clear-queue clear-database
 
 # Default target
 .DEFAULT_GOAL := help
@@ -203,6 +203,10 @@ flush-database: ## Flush the entire MySQL database
 		exit 1; \
 	fi
 	@echo "MySQL database flushed successfully."
+
+clear-queue: flush-queue ## Alias: clear the Redis queue (same as flush-queue)
+
+clear-database: flush-database ## Alias: clear the MySQL database (same as flush-database)
 
 install-tools: ## Install development tools
 	@echo "Installing development tools..."
