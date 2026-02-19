@@ -21,14 +21,22 @@ type RedisQueue struct {
 
 // NewRedisQueue creates a new Redis queue
 func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
+	poolSize := cfg.PoolSize
+	if poolSize <= 0 {
+		poolSize = 200
+	}
+
 	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.GetAddr(),
-		Password: cfg.Password,
-		DB:       cfg.DB,
-		PoolSize: 100, // High pool size for performance
+		Addr:         cfg.GetAddr(),
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     poolSize,
+		MinIdleConns: poolSize / 4,
+		PoolTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
 	})
 
-	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -43,14 +51,13 @@ func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
 		maxLen:        cfg.MaxLen,
 	}
 
-	// Create consumer group (ignore error if already exists)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
-	
+
 	err := client.XGroupCreateMkStream(ctx2, queue.streamName, queue.consumerGroup, "0").Err()
 	if err != nil {
 		if err.Error() == "BUSYGROUP Consumer Group name already exists" {
-			logger.Info("Consumer group already exists (this is normal)", 
+			logger.Info("Consumer group already exists (this is normal)",
 				zap.String("consumer_group", queue.consumerGroup))
 		} else {
 			logger.Warn("Failed to create consumer group", zap.Error(err))
@@ -63,18 +70,48 @@ func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
 	logger.Info("Redis queue initialized",
 		zap.String("stream", queue.streamName),
 		zap.String("consumer_group", queue.consumerGroup),
-		zap.Int64("max_len", queue.maxLen))
+		zap.Int64("max_len", queue.maxLen),
+		zap.Int("pool_size", poolSize))
 
 	return queue, nil
 }
 
+// EnqueueWithDepth atomically enqueues a message and returns the current stream length
+// using a Redis pipeline (single round-trip).
+func (q *RedisQueue) EnqueueWithDepth(ctx context.Context, data []byte) (messageID string, depth int64, err error) {
+	pipe := q.client.Pipeline()
+
+	addCmd := pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: q.streamName,
+		MaxLen: q.maxLen,
+		Approx: true,
+		Values: map[string]interface{}{
+			"data":      data,
+			"timestamp": time.Now().Unix(),
+		},
+	})
+
+	lenCmd := pipe.XLen(ctx, q.streamName)
+
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		logger.Error("Failed to enqueue message (pipeline)", zap.Error(err))
+		return "", 0, fmt.Errorf("failed to enqueue: %w", err)
+	}
+
+	messageID = addCmd.Val()
+	depth = lenCmd.Val()
+
+	logger.Debug("Message enqueued", zap.String("message_id", messageID), zap.Int64("depth", depth))
+	return messageID, depth, nil
+}
+
 // Enqueue adds a message to the Redis Stream
 func (q *RedisQueue) Enqueue(ctx context.Context, data []byte) (string, error) {
-	// Add to stream with MAXLEN for memory management
 	result, err := q.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: q.streamName,
 		MaxLen: q.maxLen,
-		Approx: true, // Use approximate trimming for better performance
+		Approx: true,
 		Values: map[string]interface{}{
 			"data":      data,
 			"timestamp": time.Now().Unix(),
@@ -119,4 +156,3 @@ func (q *RedisQueue) GetMaxLen() int64 {
 func (q *RedisQueue) Len(ctx context.Context) (int64, error) {
 	return q.client.XLen(ctx, q.streamName).Result()
 }
-

@@ -39,6 +39,7 @@ type RedisConfig struct {
 	StreamName             string
 	ConsumerGroup          string
 	MaxLen                 int64
+	PoolSize               int
 	QueueBackpressureLimit int64 // Reject new items when depth >= this (0 = use 90% of MaxLen)
 }
 
@@ -107,6 +108,7 @@ func Load() (*Config, error) {
 			StreamName:             getEnv("REDIS_STREAM_NAME", "gps:reports"),
 			ConsumerGroup:          getEnv("REDIS_CONSUMER_GROUP", "gps-workers"),
 			MaxLen:                 getInt64("REDIS_MAX_LEN", 10000),
+			PoolSize:               getInt("REDIS_POOL_SIZE", 200),
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
 		},
 		MySQL: MySQLConfig{
@@ -121,17 +123,17 @@ func Load() (*Config, error) {
 		},
 		Worker: WorkerConfig{
 			Count:     getInt("WORKER_COUNT", 50),
-			BatchSize: getInt("WORKER_BATCH_SIZE", 10),
+			BatchSize: getInt("WORKER_BATCH_SIZE", 50),
 		},
 		Retry: RetryConfig{
-			MaxAttempts:     getInt("MAX_RETRY_ATTEMPTS", 5),
-			DelayFirst:      getDuration("RETRY_DELAY_FIRST", 5*time.Second),
-			DelaySubsequent: getDuration("RETRY_DELAY_SUBSEQUENT", 10*time.Second),
+			MaxAttempts:     getInt("MAX_RETRY_ATTEMPTS", 3),
+			DelayFirst:      getDuration("RETRY_DELAY_FIRST", 1*time.Second),
+			DelaySubsequent: getDuration("RETRY_DELAY_SUBSEQUENT", 2*time.Second),
 		},
 		HTTP: HTTPConfig{
-			Timeout:            getDuration("HTTP_CLIENT_TIMEOUT", 30*time.Second),
-			MaxIdleConns:       getInt("HTTP_CLIENT_MAX_IDLE_CONNS", 100),
-			MaxConnsPerHost:    getInt("HTTP_CLIENT_MAX_CONNS_PER_HOST", 10),
+			Timeout:            getDuration("HTTP_CLIENT_TIMEOUT", 15*time.Second),
+			MaxIdleConns:       getInt("HTTP_CLIENT_MAX_IDLE_CONNS", 200),
+			MaxConnsPerHost:    getInt("HTTP_CLIENT_MAX_CONNS_PER_HOST", 60),
 			DestinationServers: getSlice("DESTINATION_SERVERS", []string{}),
 		},
 		RateLimit: RateLimitConfig{

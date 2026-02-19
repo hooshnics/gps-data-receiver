@@ -26,13 +26,13 @@ type Consumer struct {
 	wg             sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
-	activeWorkers  atomic.Int32 // Track active workers count
+	activeWorkers  atomic.Int32
 }
 
 // NewConsumer creates a new consumer
 func NewConsumer(queue *RedisQueue, workerCount, batchSize int, handler MessageHandler) *Consumer {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	c := &Consumer{
 		queue:          queue,
 		workerCount:    workerCount,
@@ -43,11 +43,11 @@ func NewConsumer(queue *RedisQueue, workerCount, batchSize int, handler MessageH
 		cancel:         cancel,
 	}
 	c.activeWorkers.Store(0)
-	
+
 	return c
 }
 
-// Start starts the consumer workers
+// Start starts the consumer workers and the pending message reclaimer.
 func (c *Consumer) Start() {
 	logger.Info("Starting consumer workers",
 		zap.Int("worker_count", c.workerCount),
@@ -58,7 +58,10 @@ func (c *Consumer) Start() {
 		c.wg.Add(1)
 		go c.worker(i)
 	}
-	
+
+	c.wg.Add(1)
+	go c.reclaimPending()
+
 	logger.Info("All consumer workers started successfully",
 		zap.Int("worker_count", c.workerCount))
 }
@@ -74,8 +77,7 @@ func (c *Consumer) Stop() {
 // worker is the main worker loop
 func (c *Consumer) worker(workerID int) {
 	defer c.wg.Done()
-	
-	// Panic recovery to prevent worker crashes
+
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Worker panic recovered",
@@ -93,14 +95,13 @@ func (c *Consumer) worker(workerID int) {
 			logger.Info("Worker shutting down", zap.Int("worker_id", workerID))
 			return
 		default:
-			// Wrap processMessages in a recovery block to handle any panics
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Error("Panic in processMessages",
 							zap.Int("worker_id", workerID),
 							zap.Any("panic", r))
-						time.Sleep(1 * time.Second) // Back off before retrying
+						time.Sleep(1 * time.Second)
 					}
 				}()
 				c.processMessages(workerID, consumerName)
@@ -109,77 +110,72 @@ func (c *Consumer) worker(workerID int) {
 	}
 }
 
-// processMessages reads and processes messages from the stream
+// processMessages reads and processes a batch, then ACKs all successful messages in one pipeline call.
 func (c *Consumer) processMessages(workerID int, consumerName string) {
-	// Use a timeout for the read operation
 	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 	defer cancel()
 
-	// Read messages from the stream
 	streams, err := c.queue.GetClient().XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    c.queue.GetConsumerGroup(),
 		Consumer: consumerName,
 		Streams:  []string{c.queue.GetStreamName(), ">"},
 		Count:    int64(c.batchSize),
-		Block:    2 * time.Second, // Block for 2 seconds if no messages
+		Block:    2 * time.Second,
 	}).Result()
 
 	if err != nil {
-		// Context cancelled or deadline exceeded is normal during shutdown
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			return
-		}
-		// Redis nil error means no messages
-		if err == redis.Nil {
+		if err == context.Canceled || err == context.DeadlineExceeded || err == redis.Nil {
 			return
 		}
 		logger.Error("Failed to read from stream",
 			zap.Int("worker_id", workerID),
 			zap.String("consumer", consumerName),
 			zap.Error(err))
-		time.Sleep(1 * time.Second) // Back off on error
+		time.Sleep(1 * time.Second)
 		return
 	}
 
-	// Process each message
 	for _, stream := range streams {
+		if len(stream.Messages) == 0 {
+			continue
+		}
+
+		ackIDs := make([]string, 0, len(stream.Messages))
+
 		for _, message := range stream.Messages {
-			// Check if context is cancelled before processing
 			select {
 			case <-c.ctx.Done():
-				logger.Info("Worker stopping, skipping remaining messages",
-					zap.Int("worker_id", workerID))
+				c.batchAck(ackIDs)
 				return
 			default:
-				c.handleMessage(workerID, message)
+				if c.handleMessage(workerID, message) {
+					ackIDs = append(ackIDs, message.ID)
+				}
 			}
 		}
+
+		c.batchAck(ackIDs)
 	}
 }
 
-// handleMessage processes a single message
-func (c *Consumer) handleMessage(workerID int, message redis.XMessage) {
-	// Mark worker as active
+// handleMessage processes a single message and returns true if it should be ACKed.
+func (c *Consumer) handleMessage(workerID int, message redis.XMessage) bool {
 	c.activeWorkers.Add(1)
 	defer c.activeWorkers.Add(-1)
-	
-	// Update Prometheus metrics directly
+
 	if metrics.AppMetrics != nil {
 		metrics.AppMetrics.IncActiveWorker()
 		defer metrics.AppMetrics.DecActiveWorker()
 	}
-	
-	// Extract data from message
+
 	dataInterface, ok := message.Values["data"]
 	if !ok {
 		logger.Error("Message missing data field",
 			zap.Int("worker_id", workerID),
 			zap.String("message_id", message.ID))
-		c.ackMessage(message.ID)
-		return
+		return true
 	}
 
-	// Convert to bytes
 	var data []byte
 	switch v := dataInterface.(type) {
 	case string:
@@ -190,11 +186,9 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) {
 		logger.Error("Invalid data type in message",
 			zap.Int("worker_id", workerID),
 			zap.String("message_id", message.ID))
-		c.ackMessage(message.ID)
-		return
+		return true
 	}
 
-	// Process the message with handler
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -204,33 +198,85 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) {
 			zap.Int("worker_id", workerID),
 			zap.String("message_id", message.ID),
 			zap.Error(err))
-		// Still ACK to avoid reprocessing - handler should have retry logic
-		c.ackMessage(message.ID)
+	}
+
+	return true
+}
+
+// batchAck ACKs multiple messages in a single Redis pipeline call.
+func (c *Consumer) batchAck(ids []string) {
+	if len(ids) == 0 {
 		return
 	}
 
-	// ACK the message
-	c.ackMessage(message.ID)
-	logger.Debug("Message processed successfully",
-		zap.Int("worker_id", workerID),
-		zap.String("message_id", message.ID))
-}
-
-// ackMessage acknowledges a message
-func (c *Consumer) ackMessage(messageID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := c.queue.GetClient().XAck(ctx,
-		c.queue.GetStreamName(),
-		c.queue.GetConsumerGroup(),
-		messageID).Err()
+	pipe := c.queue.GetClient().Pipeline()
+	pipe.XAck(ctx, c.queue.GetStreamName(), c.queue.GetConsumerGroup(), ids...)
+	pipe.XDel(ctx, c.queue.GetStreamName(), ids...)
 
+	_, err := pipe.Exec(ctx)
 	if err != nil {
-		logger.Error("Failed to ACK message",
-			zap.String("message_id", messageID),
+		logger.Error("Failed to batch ACK messages",
+			zap.Int("count", len(ids)),
 			zap.Error(err))
 	}
+}
+
+// reclaimPending periodically claims messages that were delivered but never ACKed (e.g. crashed workers).
+func (c *Consumer) reclaimPending() {
+	defer c.wg.Done()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	consumerName := fmt.Sprintf("%s-reclaimer", c.consumerPrefix)
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			c.claimStaleMessages(consumerName)
+		}
+	}
+}
+
+// claimStaleMessages claims messages idle for >60s and reprocesses them.
+func (c *Consumer) claimStaleMessages(consumerName string) {
+	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	defer cancel()
+
+	messages, _, err := c.queue.GetClient().XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   c.queue.GetStreamName(),
+		Group:    c.queue.GetConsumerGroup(),
+		Consumer: consumerName,
+		MinIdle:  60 * time.Second,
+		Start:    "0-0",
+		Count:    int64(c.batchSize),
+	}).Result()
+
+	if err != nil {
+		if err != context.Canceled && err != context.DeadlineExceeded {
+			logger.Debug("Failed to auto-claim pending messages", zap.Error(err))
+		}
+		return
+	}
+
+	if len(messages) == 0 {
+		return
+	}
+
+	logger.Info("Reclaiming stale pending messages", zap.Int("count", len(messages)))
+
+	ackIDs := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		if c.handleMessage(-1, msg) {
+			ackIDs = append(ackIDs, msg.ID)
+		}
+	}
+	c.batchAck(ackIDs)
 }
 
 // GetActiveWorkerCount returns the current number of active workers
@@ -242,4 +288,3 @@ func (c *Consumer) GetActiveWorkerCount() int {
 func (c *Consumer) GetWorkerPoolSize() int {
 	return c.workerCount
 }
-

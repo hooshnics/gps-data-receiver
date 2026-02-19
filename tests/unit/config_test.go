@@ -31,9 +31,9 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 0, cfg.Redis.DB)
 
 	assert.Equal(t, 50, cfg.Worker.Count)
-	assert.Equal(t, 5, cfg.Retry.MaxAttempts)
-	assert.Equal(t, 5*time.Second, cfg.Retry.DelayFirst)
-	assert.Equal(t, 10*time.Second, cfg.Retry.DelaySubsequent)
+	assert.Equal(t, 3, cfg.Retry.MaxAttempts)
+	assert.Equal(t, 1*time.Second, cfg.Retry.DelayFirst)
+	assert.Equal(t, 2*time.Second, cfg.Retry.DelaySubsequent)
 }
 
 func TestLoadConfig_CustomValues(t *testing.T) {

@@ -27,26 +27,19 @@ func RequestIDMiddleware() gin.HandlerFunc {
 	}
 }
 
-// LoggingMiddleware logs request details and records metrics
+// LoggingMiddleware logs request details and records metrics.
+// Normal requests are logged at Debug level to avoid I/O bottlenecks under load;
+// slow (>1s) or failed (4xx/5xx) requests are logged at Info/Warn.
 func LoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		path := c.Request.URL.Path
 		method := c.Request.Method
 
-		requestID, _ := c.Get("request_id")
-		
-		// Track active requests
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.HTTPActiveRequests.Inc()
 			defer metrics.AppMetrics.HTTPActiveRequests.Dec()
 		}
-
-		logger.Info("Incoming request",
-			zap.String("request_id", requestID.(string)),
-			zap.String("method", method),
-			zap.String("path", path),
-			zap.String("client_ip", c.ClientIP()))
 
 		c.Next()
 
@@ -55,15 +48,6 @@ func LoggingMiddleware() gin.HandlerFunc {
 		requestSize := int(c.Request.ContentLength)
 		responseSize := c.Writer.Size()
 
-		logger.Info("Request completed",
-			zap.String("request_id", requestID.(string)),
-			zap.String("method", method),
-			zap.String("path", path),
-			zap.Int("status", statusCode),
-			zap.Duration("duration", duration),
-			zap.Int("response_size", responseSize))
-		
-		// Record metrics
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordHTTPRequest(
 				method,
@@ -73,6 +57,40 @@ func LoggingMiddleware() gin.HandlerFunc {
 				requestSize,
 				responseSize,
 			)
+		}
+
+		requestID, _ := c.Get("request_id")
+		rid, _ := requestID.(string)
+
+		switch {
+		case statusCode >= 500:
+			logger.Warn("Request completed with server error",
+				zap.String("request_id", rid),
+				zap.String("method", method),
+				zap.String("path", path),
+				zap.Int("status", statusCode),
+				zap.Duration("duration", duration))
+		case statusCode >= 400:
+			logger.Info("Request completed with client error",
+				zap.String("request_id", rid),
+				zap.String("method", method),
+				zap.String("path", path),
+				zap.Int("status", statusCode),
+				zap.Duration("duration", duration))
+		case duration > 1*time.Second:
+			logger.Info("Slow request completed",
+				zap.String("request_id", rid),
+				zap.String("method", method),
+				zap.String("path", path),
+				zap.Int("status", statusCode),
+				zap.Duration("duration", duration))
+		default:
+			logger.Debug("Request completed",
+				zap.String("request_id", rid),
+				zap.String("method", method),
+				zap.String("path", path),
+				zap.Int("status", statusCode),
+				zap.Duration("duration", duration))
 		}
 	}
 }
