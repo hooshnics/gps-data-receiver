@@ -101,7 +101,7 @@ func RecoveryMiddleware() gin.HandlerFunc {
 		defer func() {
 			if err := recover(); err != nil {
 				requestID, _ := c.Get("request_id")
-				
+
 				logger.Error("Panic recovered",
 					zap.String("request_id", requestID.(string)),
 					zap.Any("error", err),
@@ -197,11 +197,11 @@ func RateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 
 		if !limiter.Allow() {
 			requestID, _ := c.Get("request_id")
-			
+
 			logger.Warn("Rate limit exceeded",
 				zap.String("request_id", requestID.(string)),
 				zap.String("client_ip", ip))
-			
+
 			// Record rate limit hit
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordRateLimitHit(ip)
@@ -234,7 +234,7 @@ func ContentTypeMiddleware() gin.HandlerFunc {
 			contentType := c.GetHeader("Content-Type")
 			if contentType != "application/json" && contentType != "" {
 				requestID, _ := c.Get("request_id")
-				
+
 				logger.Warn("Invalid Content-Type",
 					zap.String("request_id", requestID.(string)),
 					zap.String("content_type", contentType))
@@ -258,4 +258,3 @@ func RequestSizeLimitMiddleware(maxSize int64) gin.HandlerFunc {
 		c.Next()
 	}
 }
-

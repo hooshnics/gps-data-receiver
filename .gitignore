@@ -51,3 +51,7 @@ temp/
 dist/
 build/
 
+# Frontend (Vue / Node)
+web/node_modules/
+web/dist/
+
