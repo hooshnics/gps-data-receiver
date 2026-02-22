@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gps-data-receiver/internal/config"
@@ -51,20 +52,9 @@ func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
 		maxLen:        cfg.MaxLen,
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-
-	err := client.XGroupCreateMkStream(ctx2, queue.streamName, queue.consumerGroup, "0").Err()
-	if err != nil {
-		if err.Error() == "BUSYGROUP Consumer Group name already exists" {
-			logger.Info("Consumer group already exists (this is normal)",
-				zap.String("consumer_group", queue.consumerGroup))
-		} else {
-			logger.Warn("Failed to create consumer group", zap.Error(err))
-		}
-	} else {
-		logger.Info("Consumer group created successfully",
-			zap.String("consumer_group", queue.consumerGroup))
+	// Ensure stream and consumer group exist (retry on transient failure)
+	if err := queue.ensureConsumerGroupWithRetry(context.Background(), 3, 2*time.Second); err != nil {
+		return nil, fmt.Errorf("consumer group init: %w", err)
 	}
 
 	logger.Info("Redis queue initialized",
@@ -155,4 +145,44 @@ func (q *RedisQueue) GetMaxLen() int64 {
 // Len returns the current number of entries in the stream (queue depth)
 func (q *RedisQueue) Len(ctx context.Context) (int64, error) {
 	return q.client.XLen(ctx, q.streamName).Result()
+}
+
+// EnsureConsumerGroup creates the stream and consumer group if they do not exist.
+// Idempotent: safe to call on every NOGROUP. Returns nil on success or if group already exists (BUSYGROUP).
+func (q *RedisQueue) EnsureConsumerGroup(ctx context.Context) error {
+	err := q.client.XGroupCreateMkStream(ctx, q.streamName, q.consumerGroup, "0").Err()
+	if err == nil {
+		logger.Info("Consumer group created",
+			zap.String("stream", q.streamName),
+			zap.String("consumer_group", q.consumerGroup))
+		return nil
+	}
+	if strings.Contains(err.Error(), "BUSYGROUP") {
+		return nil
+	}
+	return err
+}
+
+// ensureConsumerGroupWithRetry creates the consumer group with retries (for startup).
+func (q *RedisQueue) ensureConsumerGroupWithRetry(ctx context.Context, attempts int, backoff time.Duration) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(backoff)
+		}
+		lastErr = q.EnsureConsumerGroup(ctx)
+		if lastErr == nil {
+			if i == 0 {
+				logger.Info("Consumer group ready",
+					zap.String("stream", q.streamName),
+					zap.String("consumer_group", q.consumerGroup))
+			}
+			return nil
+		}
+		logger.Warn("Consumer group create attempt failed, will retry",
+			zap.Int("attempt", i+1),
+			zap.Int("max_attempts", attempts),
+			zap.Error(lastErr))
+	}
+	return lastErr
 }
