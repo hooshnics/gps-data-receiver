@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -21,6 +22,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
+
+// serveSPA returns a Gin handler that serves index.html for SPA client-side routing.
+func serveSPA(webDist string) gin.HandlerFunc {
+	indexPath := filepath.Join(webDist, "index.html")
+	return func(c *gin.Context) {
+		c.File(indexPath)
+	}
+}
 
 func main() {
 	// Load configuration
@@ -94,7 +103,7 @@ func main() {
 			failedPacketSaver.Submit(storage.FailedPacketJob{
 				Payload:      data,
 				RetryCount:   result.Attempt,
-				LastError:   result.Error.Error(),
+				LastError:    result.Error.Error(),
 				TargetServer: result.TargetServer,
 			})
 			return result.Error
@@ -157,6 +166,17 @@ func main() {
 	router.GET("/monitoring/requests/:id", handler.GetRequestDetails)
 	router.GET("/monitoring/statistics", handler.GetStatistics)
 
+	// Vue.js SPA: serve built frontend when web/dist exists
+	webDist := filepath.Join("web", "dist")
+	if info, err := os.Stat(webDist); err == nil && info.IsDir() {
+		router.Static("/assets", filepath.Join(webDist, "assets"))
+		favicon := filepath.Join(webDist, "favicon.svg")
+		if _, err := os.Stat(favicon); err == nil {
+			router.StaticFile("/favicon.svg", favicon)
+		}
+		router.NoRoute(serveSPA(webDist))
+	}
+
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
@@ -178,10 +198,10 @@ func main() {
 			if metrics.AppMetrics != nil {
 				// Update worker pool size
 				metrics.AppMetrics.SetWorkerPoolSize(cfg.Worker.Count)
-				
+
 				// Active workers count is updated directly by workers
 				activeWorkers := consumer.GetActiveWorkerCount()
-				
+
 				// Log warning if no workers are active but queue has items
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
@@ -189,7 +209,7 @@ func main() {
 
 				if err == nil {
 					metrics.AppMetrics.UpdateQueueDepth(queueLen)
-					
+
 					// Health check: warn if queue is growing but no workers are active
 					if queueLen > 100 && activeWorkers == 0 {
 						logger.Warn("Queue depth high but no active workers",

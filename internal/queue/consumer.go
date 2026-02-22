@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +123,21 @@ func (c *Consumer) processMessages(workerID int, consumerName string) {
 
 	if err != nil {
 		if err == context.Canceled || err == context.DeadlineExceeded || err == redis.Nil {
+			return
+		}
+		// Stream or consumer group was deleted (e.g. Redis restart/FLUSHDB). Recreate and retry next iteration.
+		if strings.Contains(err.Error(), "NOGROUP") {
+			if ensureErr := c.queue.EnsureConsumerGroup(c.ctx); ensureErr != nil {
+				logger.Error("Failed to recreate consumer group after NOGROUP",
+					zap.Int("worker_id", workerID),
+					zap.Error(ensureErr))
+			} else {
+				logger.Info("Recreated consumer group after NOGROUP",
+					zap.Int("worker_id", workerID),
+					zap.String("stream", c.queue.GetStreamName()),
+					zap.String("group", c.queue.GetConsumerGroup()))
+			}
+			time.Sleep(1 * time.Second)
 			return
 		}
 		logger.Error("Failed to read from stream",
