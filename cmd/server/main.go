@@ -62,7 +62,10 @@ func main() {
 	httpSender := sender.NewHTTPSender(cfg)
 	defer httpSender.Close()
 
-	// Create message handler that sends data to destination servers
+	// Socket.IO for real-time broadcast (received + delivered). Created early so messageHandler can emit delivered events.
+	io := socketio.New()
+
+	// Create message handler that sends data to destination servers and broadcasts on success
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
 
@@ -78,6 +81,17 @@ func main() {
 				zap.Int("attempts", result.Attempt),
 				zap.Error(result.Error))
 			return result.Error
+		}
+
+		// Broadcast delivered packet to frontend (same pattern as received in handler)
+		payload := map[string]interface{}{
+			"delivered_at":  time.Now().UTC().Format(time.RFC3339),
+			"target_server": result.TargetServer,
+			"payload":       string(data),
+			"payload_size":  len(data),
+		}
+		if err := io.Emit("gps-delivered", payload); err != nil {
+			logger.Debug("Broadcast gps-delivered failed", zap.Error(err))
 		}
 
 		return nil
@@ -123,9 +137,7 @@ func main() {
 	router.Use(api.ContentTypeMiddleware())
 	router.Use(api.RequestSizeLimitMiddleware(cfg.Server.MaxRequestSize))
 
-	// Socket.IO for real-time broadcast of received GPS packets to the frontend
-	io := socketio.New()
-	// Wrap so WebSocket upgrade succeeds when proxied (e.g. Vite dev: Origin is localhost:5173, Host is localhost:8080).
+	// Wrap Socket.IO so WebSocket upgrade succeeds when proxied (e.g. Vite dev: Origin is localhost:5173, Host is localhost:8080).
 	// The ismhdez library uses gorilla/websocket default CheckOrigin; rewriting Origin to match Host allows the upgrade.
 	socketHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if o := r.Header.Get("Origin"); o != "" {
