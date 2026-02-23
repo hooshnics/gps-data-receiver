@@ -13,14 +13,26 @@ const DEBUG = import.meta.env.DEV
  */
 
 /**
- * Composable for real-time GPS packet stream via Socket.IO.
- * @returns {{ packets: import('vue').Ref<GpsPacket[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearPackets: () => void }}
+ * @typedef {Object} DeliveredPacket
+ * @property {string} delivered_at
+ * @property {string} target_server
+ * @property {string} payload
+ * @property {number} payload_size
+ */
+
+/**
+ * Composable for real-time GPS packet streams via Socket.IO (received + delivered).
+ * @returns {{ packets: import('vue').Ref<GpsPacket[]>, deliveredPackets: import('vue').Ref<DeliveredPacket[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearPackets: () => void, clearDeliveredPackets: () => void }}
  */
 export function useGpsPackets() {
   const packets = ref(/** @type {GpsPacket[]} */ ([]))
+  const deliveredPackets = ref(/** @type {DeliveredPacket[]} */ ([]))
 
   function clearPackets() {
     packets.value = []
+  }
+  function clearDeliveredPackets() {
+    deliveredPackets.value = []
   }
   const connected = ref(false)
   const error = ref(/** @type {string|null} */ (null))
@@ -87,6 +99,23 @@ export function useGpsPackets() {
         ].slice(0, MAX_PACKETS)
       }
     })
+
+    socket.on('gps-delivered', (data) => {
+      if (DEBUG) {
+        console.log('[Socket.IO] gps-delivered received', data)
+      }
+      if (data && typeof data === 'object') {
+        deliveredPackets.value = [
+          {
+            delivered_at: data.delivered_at ?? new Date().toISOString(),
+            target_server: data.target_server ?? '',
+            payload: data.payload ?? '',
+            payload_size: typeof data.payload_size === 'number' ? data.payload_size : 0,
+          },
+          ...deliveredPackets.value,
+        ].slice(0, MAX_PACKETS)
+      }
+    })
   })
 
   onUnmounted(() => {
@@ -96,5 +125,5 @@ export function useGpsPackets() {
     }
   })
 
-  return { packets, connected, error, socketId, clearPackets }
+  return { packets, deliveredPackets, connected, error, socketId, clearPackets, clearDeliveredPackets }
 }
