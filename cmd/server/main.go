@@ -16,7 +16,6 @@ import (
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/queue"
 	"github.com/gps-data-receiver/internal/sender"
-	"github.com/gps-data-receiver/internal/storage"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -65,58 +64,38 @@ func main() {
 	}
 	defer redisQueue.Close()
 
-	// Initialize MySQL
-	mysql, err := storage.NewMySQL(&cfg.MySQL)
-	if err != nil {
-		logger.Fatal("Failed to initialize MySQL", zap.Error(err))
-	}
-	defer mysql.Close()
-
-	// Initialize repository and async failed-packet saver (so workers are not blocked on DB)
-	repository := storage.NewFailedPacketRepository(mysql)
-	failedPacketSaver := storage.NewFailedPacketSaver(repository, 1000)
-	defer failedPacketSaver.Shutdown(15 * time.Second)
-
 	// Initialize HTTP sender
 	httpSender := sender.NewHTTPSender(cfg)
 	defer httpSender.Close()
 
-	// Create message handler that sends data and handles failures
+	// Create message handler that sends data to destination servers
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
 
-		// Send data with retry logic
 		result := httpSender.Send(ctx, data)
 
-		// Record processing metrics
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordQueueProcessing(time.Since(start))
 		}
 
 		if !result.Success {
-			logger.Error("Failed to send packet after all retries, saving to database (async)",
+			logger.Warn("Send failed, message will be retried via queue redelivery",
 				zap.String("target_server", result.TargetServer),
 				zap.Int("attempts", result.Attempt),
 				zap.Error(result.Error))
-
-			// Submit to async saver so this worker is not blocked on MySQL
-			failedPacketSaver.Submit(storage.FailedPacketJob{
-				Payload:      data,
-				RetryCount:   result.Attempt,
-				LastError:    result.Error.Error(),
-				TargetServer: result.TargetServer,
-			})
 			return result.Error
 		}
 
 		return nil
 	}
 
-	// Initialize consumer with worker pool
+	// Initialize consumer with worker pool.
+	// maxRetries controls total queue delivery attempts before a message is dropped.
 	consumer := queue.NewConsumer(
 		redisQueue,
 		cfg.Worker.Count,
 		cfg.Worker.BatchSize,
+		cfg.Retry.MaxAttempts,
 		messageHandler,
 	)
 
@@ -192,17 +171,12 @@ func main() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
-		lastFailedUpdate := time.Time{}
-
 		for range ticker.C {
 			if metrics.AppMetrics != nil {
-				// Update worker pool size
 				metrics.AppMetrics.SetWorkerPoolSize(cfg.Worker.Count)
 
-				// Active workers count is updated directly by workers
 				activeWorkers := consumer.GetActiveWorkerCount()
 
-				// Log warning if no workers are active but queue has items
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
 				cancel()
@@ -210,7 +184,6 @@ func main() {
 				if err == nil {
 					metrics.AppMetrics.UpdateQueueDepth(queueLen)
 
-					// Health check: warn if queue is growing but no workers are active
 					if queueLen > 100 && activeWorkers == 0 {
 						logger.Warn("Queue depth high but no active workers",
 							zap.Int64("queue_depth", queueLen),
@@ -219,18 +192,6 @@ func main() {
 					}
 				} else {
 					logger.Error("Failed to get queue length", zap.Error(err))
-				}
-
-				// Update failed packets count (less frequently to reduce DB load)
-				if time.Since(lastFailedUpdate) >= 10*time.Second {
-					lastFailedUpdate = time.Now()
-					ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
-					failedCount, err := repository.Count(ctx2)
-					cancel2()
-
-					if err == nil {
-						metrics.AppMetrics.UpdateFailedPacketsInDB(failedCount)
-					}
 				}
 			}
 		}

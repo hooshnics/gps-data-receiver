@@ -20,20 +20,3 @@ func NewGPSPacket(data []byte) *GPSPacket {
 		Timestamp: time.Now(),
 	}
 }
-
-// FailedPacket represents a packet that failed to be delivered
-type FailedPacket struct {
-	ID           uint      `gorm:"primaryKey"`
-	Payload      string    `gorm:"type:text;not null"`
-	RetryCount   int       `gorm:"not null;default:0"`
-	LastError    string    `gorm:"type:text"`
-	TargetServer string    `gorm:"type:varchar(255)"`
-	CreatedAt    time.Time `gorm:"index"`
-	UpdatedAt    time.Time
-}
-
-// TableName specifies the table name for FailedPacket
-func (FailedPacket) TableName() string {
-	return "failed_packets"
-}
-

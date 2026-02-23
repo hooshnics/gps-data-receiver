@@ -12,14 +12,13 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server   ServerConfig
-	Redis    RedisConfig
-	MySQL    MySQLConfig
-	Worker   WorkerConfig
-	Retry    RetryConfig
-	HTTP     HTTPConfig
+	Server    ServerConfig
+	Redis     RedisConfig
+	Worker    WorkerConfig
+	Retry     RetryConfig
+	HTTP      HTTPConfig
 	RateLimit RateLimitConfig
-	Logging  LoggingConfig
+	Logging   LoggingConfig
 }
 
 // ServerConfig holds server configuration
@@ -43,18 +42,6 @@ type RedisConfig struct {
 	QueueBackpressureLimit int64 // Reject new items when depth >= this (0 = use 90% of MaxLen)
 }
 
-// MySQLConfig holds MySQL configuration
-type MySQLConfig struct {
-	Host            string
-	Port            string
-	User            string
-	Password        string
-	Database        string
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-}
-
 // WorkerConfig holds worker pool configuration
 type WorkerConfig struct {
 	Count     int
@@ -63,9 +50,9 @@ type WorkerConfig struct {
 
 // RetryConfig holds retry configuration
 type RetryConfig struct {
-	MaxAttempts       int
-	DelayFirst        time.Duration
-	DelaySubsequent   time.Duration
+	MaxAttempts     int
+	DelayFirst      time.Duration
+	DelaySubsequent time.Duration
 }
 
 // HTTPConfig holds HTTP client configuration
@@ -110,16 +97,6 @@ func Load() (*Config, error) {
 			MaxLen:                 getInt64("REDIS_MAX_LEN", 10000),
 			PoolSize:               getInt("REDIS_POOL_SIZE", 200),
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
-		},
-		MySQL: MySQLConfig{
-			Host:            getEnv("MYSQL_HOST", "localhost"),
-			Port:            getEnv("MYSQL_PORT", "3306"),
-			User:            getEnv("MYSQL_USER", "root"),
-			Password:        getEnv("MYSQL_PASSWORD", ""),
-			Database:        getEnv("MYSQL_DATABASE", "gps_receiver"),
-			MaxOpenConns:    getInt("MYSQL_MAX_OPEN_CONNS", 25),
-			MaxIdleConns:    getInt("MYSQL_MAX_IDLE_CONNS", 10),
-			ConnMaxLifetime: getDuration("MYSQL_CONN_MAX_LIFETIME", 300*time.Second),
 		},
 		Worker: WorkerConfig{
 			Count:     getInt("WORKER_COUNT", 50),
@@ -219,14 +196,7 @@ func getSlice(key string, defaultValue []string) []string {
 	return result
 }
 
-// GetDSN returns the MySQL DSN connection string
-func (c *MySQLConfig) GetDSN() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		c.User, c.Password, c.Host, c.Port, c.Database)
-}
-
 // GetRedisAddr returns the Redis address
 func (c *RedisConfig) GetAddr() string {
 	return fmt.Sprintf("%s:%s", c.Host, c.Port)
 }
-

@@ -16,28 +16,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # MySQL for failed packets storage
-  mysql:
-    image: mysql:8.0
-    container_name: gps-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: gps_receiver
-      MYSQL_USER: gpsuser
-      MYSQL_PASSWORD: gpspass
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql-data:/var/lib/mysql
-    networks:
-      - gps-network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    command: --default-authentication-plugin=mysql_native_password
-
   # GPS Data Receiver Application
   app:
     build:
@@ -70,16 +48,6 @@ services:
       REDIS_CONSUMER_GROUP: "gps-workers"
       REDIS_MAX_LEN: "10000"
 
-      # MySQL Configuration
-      MYSQL_HOST: "mysql"
-      MYSQL_PORT: "3306"
-      MYSQL_USER: "gpsuser"
-      MYSQL_PASSWORD: "gpspass"
-      MYSQL_DATABASE: "gps_receiver"
-      MYSQL_MAX_OPEN_CONNS: "25"
-      MYSQL_MAX_IDLE_CONNS: "10"
-      MYSQL_CONN_MAX_LIFETIME: "300s"
-
       # Worker Configuration
       WORKER_COUNT: "50"
       WORKER_BATCH_SIZE: "50"
@@ -109,8 +77,6 @@ services:
       ENVIRONMENT: "production"
     depends_on:
       redis:
-        condition: service_healthy
-      mysql:
         condition: service_healthy
     networks:
       - gps-network
@@ -173,7 +139,6 @@ networks:
 
 volumes:
   redis-data:
-  mysql-data:
   prometheus-data:
   grafana-data:
 
