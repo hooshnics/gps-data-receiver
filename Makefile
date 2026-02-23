@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database clear-queue clear-database
 
 # Default target
 .DEFAULT_GOAL := help
@@ -221,20 +221,6 @@ setup: deps ## Setup development environment
 		echo ".env file created. Please edit it with your configuration."; \
 	fi
 	@echo "Setup complete"
-
-web-install: ## Install Vue.js frontend dependencies
-	@echo "Installing frontend dependencies..."
-	cd web && npm install
-	@echo "Frontend dependencies installed"
-
-web-build: ## Build Vue.js frontend for production
-	@echo "Building frontend..."
-	cd web && npm run build
-	@echo "Frontend built to web/dist"
-
-web-dev: ## Run Vue.js dev server (run Go backend separately with 'make run')
-	@echo "Starting Vue dev server at http://localhost:5173"
-	cd web && npm run dev
 
 start: docker-up ## Alias for docker-up
 

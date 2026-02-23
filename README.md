@@ -41,7 +41,6 @@ GPS Device → POST JSON → API Endpoint → Redis Queue → Worker Pool → Ro
 
 - **Language**: Go 1.21+
 - **Web Framework**: Gin
-- **Frontend**: Vue 3 + Vite
 - **Queue**: Redis (Streams)
 - **Database**: MySQL 8.0
 - **Logging**: Uber Zap
@@ -343,31 +342,6 @@ make build
 ```bash
 make run
 ```
-
-### Frontend (Vue.js)
-
-The project includes a Vue 3 + Vite frontend in `web/`. The Go server serves the built app when `web/dist` exists.
-
-**Development** (Vite dev server with hot reload; proxies API to Go backend):
-
-```bash
-# Terminal 1: start Go backend
-make run
-
-# Terminal 2: start Vue dev server
-cd web && npm install && npm run dev
-```
-
-Open http://localhost:5173. API calls are proxied to http://localhost:8080.
-
-**Production build** (serve from Go):
-
-```bash
-cd web && npm install && npm run build
-make run
-```
-
-Then open http://localhost:8080 to use the app served by the Go server.
 
 ### Format Code
 
