@@ -21,9 +21,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Enable BuildKit for faster builds with cache
       args:
         BUILDKIT_INLINE_CACHE: 1
+        # Override if proxy.golang.org returns 403: GOPROXY=direct make docker-up
+        GOPROXY: ${GOPROXY:-https://goproxy.io,https://proxy.golang.org,direct}
+    develop:
+      watch:
+        # Rebuild and recreate container when Go source or module files change
+        - action: rebuild
+          path: ./cmd
+        - action: rebuild
+          path: ./internal
+        - action: rebuild
+          path: ./pkg
+        - action: rebuild
+          path: go.mod
+        - action: rebuild
+          path: go.sum
     container_name: gps-receiver
     ports:
       - "8080:8080"

@@ -45,6 +45,28 @@ GPS Device → POST JSON → API Endpoint → Redis Queue → Worker Pool → Ro
 - **Database**: MySQL 8.0
 - **Logging**: Uber Zap
 - **Containerization**: Docker & Docker Compose
+- **Frontend**: Vue 3 (Vite) + Tailwind CSS (optional; in `web/`)
+
+### Frontend (Vue.js + Tailwind)
+
+The project includes an optional Vue 3 + Vite + Tailwind CSS frontend in `web/`.
+
+- **Install dependencies**: `make web-install` or `cd web && npm install`
+- **Development** (hot reload, proxies API to backend): `make web-dev` (runs on http://localhost:5173)
+- **Production build**: `make web-build` (output in `web/dist/`)
+
+When `web/dist` exists, the Go server serves the built frontend at `/` and uses SPA fallback for client-side routing.
+
+**Real-time updates**: Each received GPS packet is broadcast over Socket.IO (`/socket.io/`). The frontend connects automatically and displays incoming packets in real time.
+
+**Testing and debugging the WebSocket connection**
+
+1. **Backend**: Run the API (e.g. `make run` with Redis, or `make docker-up` for the full stack). The Go Socket.IO server only supports **WebSocket** transport (no polling).
+2. **Frontend**: Run `make web-dev` and open the URL shown (e.g. http://localhost:5173 or 5174). The page shows a **Connection debug** panel (Socket ID, status, **Send test packet** button).
+3. **Browser DevTools**:
+   - **Console**: In dev mode the app logs `[Socket.IO]` connection and packet events.
+   - **Network → WS**: Filter by "WS" to see the Socket.IO WebSocket; check for 101 (upgrade) or errors.
+4. If the status stays **Disconnected**, ensure the backend is reachable at the proxy target (default `http://localhost:8080`) and that no middleware is blocking `/socket.io/` (Content-Type checks are skipped for that path).
 
 ## 📦 Installation
 
