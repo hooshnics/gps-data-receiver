@@ -4,6 +4,11 @@
 # Stage 1: Build
 FROM golang:1.24-alpine AS builder
 
+# Use goproxy.io first; if you get 403 from proxy.golang.org, override with:
+#   docker build --build-arg GOPROXY=direct ...
+ARG GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
 # Install build dependencies in a single layer
 RUN apk add --no-cache git gcc musl-dev
 

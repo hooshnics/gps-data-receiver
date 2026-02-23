@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -227,9 +228,14 @@ func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
 	}
 }
 
-// ContentTypeMiddleware validates Content-Type header
+// ContentTypeMiddleware validates Content-Type header.
+// Skips validation for /socket.io/ (Socket.IO handshake and transport use non-JSON content types).
 func ContentTypeMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/socket.io") {
+			c.Next()
+			return
+		}
 		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
 			contentType := c.GetHeader("Content-Type")
 			if contentType != "application/json" && contentType != "" {

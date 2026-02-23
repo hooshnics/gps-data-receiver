@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs load-test flush-queue flush-database clear-queue clear-database
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -35,6 +35,19 @@ build: ## Build the application
 	@echo "Building $(BINARY_NAME)..."
 	$(GOBUILD) -o $(BINARY_PATH) -v ./cmd/server
 	@echo "Build complete: $(BINARY_PATH)"
+
+web-install: ## Install frontend dependencies (Vue + Tailwind)
+	@echo "Installing web dependencies..."
+	cd web && npm install
+	@echo "Web dependencies installed"
+
+web-build: ## Build frontend for production (output: web/dist)
+	@echo "Building frontend..."
+	cd web && npm run build
+	@echo "Frontend build complete: web/dist"
+
+web-dev: ## Run frontend dev server with hot reload (port 5173, proxies API to 8080)
+	cd web && npm run dev
 
 run: ## Run the application
 	@echo "Running $(BINARY_NAME)..."
@@ -105,11 +118,14 @@ docker-build: ## Build Docker image with BuildKit (faster)
 	DOCKER_BUILDKIT=1 docker build -t gps-receiver:latest .
 	@echo "Docker image built: gps-receiver:latest"
 
-docker-up: ## Start all services with docker-compose (uses BuildKit)
+docker-up: ## Start all services with docker-compose (uses BuildKit). If go mod download fails with 403, try: GOPROXY=direct make docker-up
 	@echo "Starting services with BuildKit..."
 	DOCKER_BUILDKIT=1 docker-compose up -d --build
 	@echo "Services started. Use 'make docker-logs' to view logs"
 	@echo "Health check: curl http://localhost:8080/health"
+
+docker-watch: ## Start services with Compose Watch: app rebuilds when Go source or go.mod/go.sum change. Run in foreground.
+	DOCKER_BUILDKIT=1 docker compose watch
 
 docker-down: ## Stop all services
 	@echo "Stopping services..."

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/gps-data-receiver/internal/sender"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
+	socketio "github.com/ismhdez/socket.io-golang/v4"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
@@ -120,8 +123,21 @@ func main() {
 	router.Use(api.ContentTypeMiddleware())
 	router.Use(api.RequestSizeLimitMiddleware(cfg.Server.MaxRequestSize))
 
+	// Socket.IO for real-time broadcast of received GPS packets to the frontend
+	io := socketio.New()
+	// Wrap so WebSocket upgrade succeeds when proxied (e.g. Vite dev: Origin is localhost:5173, Host is localhost:8080).
+	// The ismhdez library uses gorilla/websocket default CheckOrigin; rewriting Origin to match Host allows the upgrade.
+	socketHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			r.Header.Set("Origin", "http://"+r.Host)
+		}
+		io.ServeHTTP(w, r)
+	})
+	router.Any("/socket.io/*path", gin.WrapH(socketHandler))
+	logger.Info("Socket.IO enabled at /socket.io/")
+
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, io)
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
@@ -135,6 +151,35 @@ func main() {
 	router.GET("/monitoring/requests", handler.ListRequests)
 	router.GET("/monitoring/requests/:id", handler.GetRequestDetails)
 	router.GET("/monitoring/statistics", handler.GetStatistics)
+
+	// Frontend: serve built Vue app from web/dist when present
+	const frontendDir = "web/dist"
+	if dir, err := os.Stat(frontendDir); err == nil && dir.IsDir() {
+		router.Static("/assets", filepath.Join(frontendDir, "assets"))
+		router.StaticFile("/favicon.svg", filepath.Join(frontendDir, "favicon.svg"))
+		router.NoRoute(func(c *gin.Context) {
+			if c.Request.Method != http.MethodGet {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+				return
+			}
+			path := c.Request.URL.Path
+			if path == "/" {
+				c.File(filepath.Join(frontendDir, "index.html"))
+				return
+			}
+			cleanPath := filepath.Clean(filepath.Join(frontendDir, strings.TrimPrefix(path, "/")))
+			if rel, err := filepath.Rel(frontendDir, cleanPath); err != nil || strings.HasPrefix(rel, "..") {
+				c.File(filepath.Join(frontendDir, "index.html"))
+				return
+			}
+			if f, err := os.Stat(cleanPath); err == nil && !f.IsDir() {
+				c.File(cleanPath)
+				return
+			}
+			c.File(filepath.Join(frontendDir, "index.html"))
+		})
+		logger.Info("Serving frontend from " + frontendDir)
+	}
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
