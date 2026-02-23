@@ -43,14 +43,6 @@
               Received
               <span class="ml-2 font-normal text-slate-500">({{ packets.length }} shown)</span>
             </h2>
-            <button
-              type="button"
-              class="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-              :disabled="!packets.length"
-              @click="clearPackets"
-            >
-              Clear list
-            </button>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
             <ul v-if="packets.length" class="divide-y divide-slate-200">
@@ -94,10 +86,10 @@
             <button
               type="button"
               class="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-              :disabled="!deliveredPackets.length"
-              @click="clearDeliveredPackets"
+              :disabled="!packets.length && !deliveredPackets.length"
+              @click="clearBothLists"
             >
-              Clear list
+              Clear both lists
             </button>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
@@ -140,6 +132,11 @@
 import { useGpsPackets } from './composables/useGpsPackets'
 
 const { packets, deliveredPackets, connected, error, clearPackets, clearDeliveredPackets } = useGpsPackets()
+
+function clearBothLists() {
+  clearPackets()
+  clearDeliveredPackets()
+}
 
 function formatTime(iso) {
   if (!iso) return '—'
