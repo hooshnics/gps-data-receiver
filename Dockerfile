@@ -34,7 +34,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /app/gps-receiver \
     ./cmd/server
 
-# Stage 2: Runtime (minimal image)
+# Stage 2: Build frontend (Vue app for production main domain)
+FROM node:20-alpine AS frontend
+WORKDIR /app/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 3: Runtime (minimal image)
 FROM alpine:latest
 
 # Install runtime dependencies (incl. Node.js/npm for tooling or frontend builds) and create user in a single layer
@@ -46,6 +54,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/gps-receiver .
+
+# Copy built frontend so main domain (GET /) serves the Vue app
+COPY --from=frontend /app/web/dist ./web/dist
 
 # Set ownership and switch user in one step
 RUN chown -R appuser:appuser /app
