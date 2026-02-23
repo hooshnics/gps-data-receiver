@@ -22,6 +22,7 @@ type Consumer struct {
 	queue          *RedisQueue
 	workerCount    int
 	batchSize      int
+	maxRetries     int
 	handler        MessageHandler
 	consumerPrefix string
 	wg             sync.WaitGroup
@@ -30,14 +31,16 @@ type Consumer struct {
 	activeWorkers  atomic.Int32
 }
 
-// NewConsumer creates a new consumer
-func NewConsumer(queue *RedisQueue, workerCount, batchSize int, handler MessageHandler) *Consumer {
+// NewConsumer creates a new consumer. maxRetries controls how many total
+// delivery attempts a message gets before being permanently dropped.
+func NewConsumer(queue *RedisQueue, workerCount, batchSize, maxRetries int, handler MessageHandler) *Consumer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c := &Consumer{
 		queue:          queue,
 		workerCount:    workerCount,
 		batchSize:      batchSize,
+		maxRetries:     maxRetries,
 		handler:        handler,
 		consumerPrefix: fmt.Sprintf("worker-%d", time.Now().Unix()),
 		ctx:            ctx,
@@ -228,10 +231,11 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) bool {
 
 	err := c.handler(ctx, data)
 	if err != nil {
-		logger.Error("Failed to process message",
+		logger.Warn("Message processing failed, leaving in queue for redelivery",
 			zap.Int("worker_id", workerID),
 			zap.String("message_id", message.ID),
 			zap.Error(err))
+		return false
 	}
 
 	return true
@@ -277,8 +281,11 @@ func (c *Consumer) reclaimPending() {
 	}
 }
 
-// claimStaleMessages claims messages idle for >60s and reprocesses them.
+// claimStaleMessages drops messages that exceeded the max delivery count,
+// then claims remaining stale messages for reprocessing.
 func (c *Consumer) claimStaleMessages(consumerName string) {
+	c.dropExcessiveRetries()
+
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
 
@@ -304,6 +311,42 @@ func (c *Consumer) claimStaleMessages(consumerName string) {
 
 	logger.Info("Reclaiming stale pending messages", zap.Int("count", len(messages)))
 	c.processBatchConcurrently(-1, messages)
+}
+
+// dropExcessiveRetries finds pending messages whose delivery count has reached
+// maxRetries and permanently removes them from the stream.
+func (c *Consumer) dropExcessiveRetries() {
+	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	defer cancel()
+
+	pending, err := c.queue.GetClient().XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: c.queue.GetStreamName(),
+		Group:  c.queue.GetConsumerGroup(),
+		Start:  "-",
+		End:    "+",
+		Count:  200,
+	}).Result()
+
+	if err != nil {
+		if err != context.Canceled && err != context.DeadlineExceeded {
+			logger.Debug("Failed to inspect pending entries", zap.Error(err))
+		}
+		return
+	}
+
+	var deadIDs []string
+	for _, p := range pending {
+		if p.RetryCount >= int64(c.maxRetries) {
+			deadIDs = append(deadIDs, p.ID)
+		}
+	}
+
+	if len(deadIDs) > 0 {
+		logger.Warn("Dropping messages that exceeded max delivery attempts",
+			zap.Int("count", len(deadIDs)),
+			zap.Int("max_retries", c.maxRetries))
+		c.batchAck(deadIDs)
+	}
 }
 
 // GetActiveWorkerCount returns the current number of active workers

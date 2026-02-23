@@ -10,38 +10,36 @@ import (
 // Metrics holds all Prometheus metrics
 type Metrics struct {
 	// HTTP Metrics
-	HTTPRequestsTotal       *prometheus.CounterVec
-	HTTPRequestDuration     *prometheus.HistogramVec
-	HTTPRequestSize         *prometheus.HistogramVec
-	HTTPResponseSize        *prometheus.HistogramVec
-	HTTPActiveRequests      prometheus.Gauge
-	
+	HTTPRequestsTotal   *prometheus.CounterVec
+	HTTPRequestDuration *prometheus.HistogramVec
+	HTTPRequestSize     *prometheus.HistogramVec
+	HTTPResponseSize    *prometheus.HistogramVec
+	HTTPActiveRequests  prometheus.Gauge
+
 	// Queue Metrics
 	QueueDepth              prometheus.Gauge
 	QueueEnqueueTotal       prometheus.Counter
 	QueueEnqueueErrors      prometheus.Counter
 	QueueProcessedTotal     prometheus.Counter
 	QueueProcessingDuration prometheus.Histogram
-	
+
 	// Sender Metrics
-	SenderRequestsTotal     *prometheus.CounterVec
-	SenderRequestDuration   *prometheus.HistogramVec
-	SenderRetryTotal        *prometheus.CounterVec
-	SenderFailedTotal       *prometheus.CounterVec
-	
+	SenderRequestsTotal   *prometheus.CounterVec
+	SenderRequestDuration *prometheus.HistogramVec
+	SenderRetryTotal      *prometheus.CounterVec
+	SenderFailedTotal     *prometheus.CounterVec
+
 	// Failed Packets Metrics
-	FailedPacketsTotal      prometheus.Counter
-	FailedPacketsStored     prometheus.Counter
-	FailedPacketsInDB       prometheus.Gauge
-	
+	FailedPacketsTotal prometheus.Counter
+
 	// Worker Metrics
-	WorkerPoolSize          prometheus.Gauge
-	WorkerActiveCount       prometheus.Gauge
-	WorkerIdleCount         prometheus.Gauge
-	
+	WorkerPoolSize    prometheus.Gauge
+	WorkerActiveCount prometheus.Gauge
+	WorkerIdleCount   prometheus.Gauge
+
 	// Rate Limiting Metrics
-	RateLimitHits           *prometheus.CounterVec
-	
+	RateLimitHits *prometheus.CounterVec
+
 	// System Metrics (Go runtime)
 	// These are automatically collected by Prometheus Go client
 }
@@ -89,7 +87,7 @@ func InitMetrics() *Metrics {
 				Help: "Number of active HTTP requests",
 			},
 		),
-		
+
 		// Queue Metrics
 		QueueDepth: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -122,7 +120,7 @@ func InitMetrics() *Metrics {
 				Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
 			},
 		),
-		
+
 		// Sender Metrics
 		SenderRequestsTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -153,7 +151,7 @@ func InitMetrics() *Metrics {
 			},
 			[]string{"server"},
 		),
-		
+
 		// Failed Packets Metrics
 		FailedPacketsTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
@@ -161,19 +159,7 @@ func InitMetrics() *Metrics {
 				Help: "Total number of packets that failed after all retries",
 			},
 		),
-		FailedPacketsStored: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "gps_receiver_failed_packets_stored_total",
-				Help: "Total number of failed packets stored in database",
-			},
-		),
-		FailedPacketsInDB: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Name: "gps_receiver_failed_packets_in_db",
-				Help: "Current number of failed packets in database",
-			},
-		),
-		
+
 		// Worker Metrics
 		WorkerPoolSize: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -193,7 +179,7 @@ func InitMetrics() *Metrics {
 				Help: "Number of currently idle workers",
 			},
 		),
-		
+
 		// Rate Limiting Metrics
 		RateLimitHits: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -203,7 +189,7 @@ func InitMetrics() *Metrics {
 			[]string{"client_ip"},
 		),
 	}
-	
+
 	AppMetrics = m
 	return m
 }
@@ -247,11 +233,6 @@ func (m *Metrics) RecordSenderFailure(server string) {
 	m.FailedPacketsTotal.Inc()
 }
 
-// RecordFailedPacketStored records a failed packet being stored
-func (m *Metrics) RecordFailedPacketStored() {
-	m.FailedPacketsStored.Inc()
-}
-
 // RecordRateLimitHit records a rate limit hit
 func (m *Metrics) RecordRateLimitHit(clientIP string) {
 	m.RateLimitHits.WithLabelValues(clientIP).Inc()
@@ -260,11 +241,6 @@ func (m *Metrics) RecordRateLimitHit(clientIP string) {
 // UpdateQueueDepth updates the queue depth gauge
 func (m *Metrics) UpdateQueueDepth(depth int64) {
 	m.QueueDepth.Set(float64(depth))
-}
-
-// UpdateFailedPacketsInDB updates the failed packets in DB gauge
-func (m *Metrics) UpdateFailedPacketsInDB(count int64) {
-	m.FailedPacketsInDB.Set(float64(count))
 }
 
 // SetWorkerPoolSize updates worker pool size metric
@@ -289,4 +265,3 @@ func (m *Metrics) DecActiveWorker() {
 	m.WorkerActiveCount.Dec()
 	m.WorkerIdleCount.Inc()
 }
-

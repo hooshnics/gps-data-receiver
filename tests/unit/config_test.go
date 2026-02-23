@@ -99,20 +99,6 @@ func TestLoadConfig_MissingDestinationServers(t *testing.T) {
 	assert.Contains(t, err.Error(), "DESTINATION_SERVERS must be configured")
 }
 
-func TestGetDSN(t *testing.T) {
-	mysqlCfg := config.MySQLConfig{
-		Host:     "localhost",
-		Port:     "3306",
-		User:     "testuser",
-		Password: "testpass",
-		Database: "testdb",
-	}
-
-	dsn := mysqlCfg.GetDSN()
-	expected := "testuser:testpass@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=True&loc=Local"
-	assert.Equal(t, expected, dsn)
-}
-
 func TestGetRedisAddr(t *testing.T) {
 	redisCfg := config.RedisConfig{
 		Host: "redis-host",
@@ -125,7 +111,7 @@ func TestGetRedisAddr(t *testing.T) {
 
 func TestLoadConfig_ServerList(t *testing.T) {
 	os.Clearenv()
-	
+
 	testCases := []struct {
 		name     string
 		envValue string
@@ -157,4 +143,3 @@ func TestLoadConfig_ServerList(t *testing.T) {
 		})
 	}
 }
-
