@@ -116,7 +116,7 @@ services:
       - gps-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/metrics >/dev/null 2>&1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/metrics"]
       interval: 30s
       timeout: 5s
       retries: 3
