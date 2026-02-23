@@ -152,33 +152,47 @@ func main() {
 	router.GET("/monitoring/requests/:id", handler.GetRequestDetails)
 	router.GET("/monitoring/statistics", handler.GetStatistics)
 
-	// Frontend: serve built Vue app from web/dist when present
+	// Frontend: when app is accessed on the main domain (GET /), serve the built Vue app from web/dist
 	const frontendDir = "web/dist"
+	indexPath := filepath.Join(frontendDir, "index.html")
 	if dir, err := os.Stat(frontendDir); err == nil && dir.IsDir() {
 		router.Static("/assets", filepath.Join(frontendDir, "assets"))
 		router.StaticFile("/favicon.svg", filepath.Join(frontendDir, "favicon.svg"))
+		// Main domain: root path serves the frontend app
+		router.GET("/", func(c *gin.Context) {
+			c.File(indexPath)
+		})
+		// SPA fallback: unknown GET paths serve index.html so client-side routing works
 		router.NoRoute(func(c *gin.Context) {
 			if c.Request.Method != http.MethodGet {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 				return
 			}
 			path := c.Request.URL.Path
-			if path == "/" {
-				c.File(filepath.Join(frontendDir, "index.html"))
-				return
-			}
 			cleanPath := filepath.Clean(filepath.Join(frontendDir, strings.TrimPrefix(path, "/")))
 			if rel, err := filepath.Rel(frontendDir, cleanPath); err != nil || strings.HasPrefix(rel, "..") {
-				c.File(filepath.Join(frontendDir, "index.html"))
+				c.File(indexPath)
 				return
 			}
 			if f, err := os.Stat(cleanPath); err == nil && !f.IsDir() {
 				c.File(cleanPath)
 				return
 			}
-			c.File(filepath.Join(frontendDir, "index.html"))
+			c.File(indexPath)
 		})
-		logger.Info("Serving frontend from " + frontendDir)
+		logger.Info("Serving frontend from " + frontendDir + " at /")
+	} else {
+		// No built frontend: main domain still responds with a minimal status page
+		router.GET("/", func(c *gin.Context) {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>GPS Data Receiver</title></head>
+<body style="font-family:sans-serif;max-width:40em;margin:2em auto;padding:0 1em;">
+<h1>GPS Data Receiver</h1>
+<p>Backend is running. To load the app UI, build the frontend: <code>make web-build</code> then restart, or use the dev server: <code>make web-dev</code> (port 5173).</p>
+<p><a href="/health">Health</a> · <a href="/ready">Ready</a></p>
+</body></html>`))
+		})
+		logger.Info("Frontend not built (web/dist missing); serving status at /")
 	}
 
 	// Create HTTP server
