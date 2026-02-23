@@ -37,8 +37,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Stage 2: Runtime (minimal image)
 FROM alpine:latest
 
-# Install runtime dependencies and create user in a single layer
-RUN apk --no-cache add ca-certificates tzdata wget && \
+# Install runtime dependencies (incl. Node.js/npm for tooling or frontend builds) and create user in a single layer
+RUN apk --no-cache add ca-certificates tzdata wget nodejs npm && \
     addgroup -g 1000 appuser && \
     adduser -D -u 1000 -G appuser appuser
 

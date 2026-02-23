@@ -385,6 +385,8 @@ make clean
 
 ## 🐳 Docker
 
+The app image includes **Node.js** and **npm** so you can run frontend tooling or install dependencies inside the container if needed.
+
 ### Build Docker Image
 
 ```bash
