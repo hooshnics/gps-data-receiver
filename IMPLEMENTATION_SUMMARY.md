@@ -183,14 +183,16 @@ The implementation successfully handles all cases from `sample-data.txt`:
         "ew": 3,
         "ns": 1
       },
-      "date_time": "2026-02-24T08:50:19Z",
+      "date_time": "2026-02-24 08:50:19",
       "imei": "861826074262144"
     }
   ]
 }
 ```
 
-**Note:** The parsed data is wrapped in a top-level `data` field for consistency with destination server expectations.
+**Note:** 
+- The parsed data is wrapped in a top-level `data` field for consistency with destination server expectations.
+- `date_time` is in MySQL datetime format: `YYYY-MM-DD HH:MM:SS` (compatible with MySQL DATETIME columns)
 
 ## Monitoring & Observability
 

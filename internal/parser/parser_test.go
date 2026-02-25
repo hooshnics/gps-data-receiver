@@ -2,7 +2,6 @@ package parser
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,8 +27,8 @@ func TestParse_ValidSingleRecord(t *testing.T) {
 	assert.InDelta(t, 50.065317, record.Coordinate[1], 0.000001) // Longitude
 
 	// Check date/time with timezone offset (+3h 30m)
-	expectedTime := time.Date(2026, 2, 24, 8, 50, 19, 0, time.UTC)
-	assert.Equal(t, expectedTime, record.DateTime)
+	// Format: YYYY-MM-DD HH:MM:SS
+	assert.Equal(t, "2026-02-24 08:50:19", record.DateTime)
 }
 
 func TestParse_MultipleRecords(t *testing.T) {
@@ -46,9 +45,10 @@ func TestParse_MultipleRecords(t *testing.T) {
 		assert.Equal(t, 1, record.Status)
 	}
 
-	// Check they are sorted by date_time
+	// Check they are sorted by date_time (string comparison works for YYYY-MM-DD HH:MM:SS)
 	for i := 1; i < len(result); i++ {
-		assert.True(t, result[i-1].DateTime.Before(result[i].DateTime) || result[i-1].DateTime.Equal(result[i].DateTime))
+		assert.True(t, result[i-1].DateTime <= result[i].DateTime,
+			"Records should be sorted by DateTime")
 	}
 }
 
@@ -194,19 +194,19 @@ func TestParseDateTime(t *testing.T) {
 		name     string
 		date     string
 		time     string
-		expected time.Time
+		expected string
 	}{
 		{
 			name:     "sample date",
 			date:     "260224",
 			time:     "052019",
-			expected: time.Date(2026, 2, 24, 8, 50, 19, 0, time.UTC), // +3h 30m offset
+			expected: "2026-02-24 08:50:19", // +3h 30m offset, MySQL format
 		},
 		{
 			name:     "another date",
 			date:     "260131",
 			time:     "091810",
-			expected: time.Date(2026, 1, 31, 12, 48, 10, 0, time.UTC), // +3h 30m offset
+			expected: "2026-01-31 12:48:10", // +3h 30m offset, MySQL format
 		},
 	}
 
