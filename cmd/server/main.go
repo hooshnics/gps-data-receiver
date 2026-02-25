@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,7 +16,9 @@ import (
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/internal/metrics"
+	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
+	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/gps-data-receiver/internal/sender"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
@@ -69,7 +72,61 @@ func main() {
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
 
-		result := httpSender.Send(ctx, data)
+		// 1. Sanitize UTF-8 encoding
+		sanitized := sanitizer.SanitizeUTF8(data)
+
+		// 2. Parse GPS data
+		parseStart := time.Now()
+		parsed, err := parser.Parse(sanitized)
+		parseDuration := time.Since(parseStart)
+
+		if err != nil {
+			logger.Error("Failed to parse GPS data - dropping message",
+				zap.Error(err),
+				zap.String("raw_data", string(data)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordParseFailure()
+				metrics.AppMetrics.RecordDataDropped("parse_error")
+			}
+			return nil // Return nil to ACK and drop the message (no retry)
+		}
+
+		// Handle empty parse results
+		if len(parsed) == 0 {
+			logger.Warn("No valid GPS records found - dropping message",
+				zap.String("raw_data", string(data)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordParseFailure()
+				metrics.AppMetrics.RecordDataDropped("empty_result")
+			}
+			return nil // Return nil to ACK and drop the message
+		}
+
+		// Record successful parse
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.RecordParseSuccess(parseDuration, len(parsed))
+		}
+
+		logger.Debug("GPS data parsed successfully",
+			zap.Int("record_count", len(parsed)),
+			zap.Duration("parse_duration", parseDuration))
+
+		// 3. Wrap parsed data in "data" field and re-encode as JSON for destination
+		wrappedData := map[string]interface{}{
+			"data": parsed,
+		}
+		jsonData, err := json.Marshal(wrappedData)
+		if err != nil {
+			logger.Error("Failed to marshal parsed data - dropping message",
+				zap.Error(err))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("marshal_error")
+			}
+			return nil // Return nil to ACK and drop the message
+		}
+
+		// 4. Send parsed data to destination servers
+		result := httpSender.Send(ctx, jsonData)
 
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordQueueProcessing(time.Since(start))
@@ -87,8 +144,9 @@ func main() {
 		payload := map[string]interface{}{
 			"delivered_at":  time.Now().UTC().Format(time.RFC3339),
 			"target_server": result.TargetServer,
-			"payload":       string(data),
-			"payload_size":  len(data),
+			"payload":       string(jsonData),
+			"payload_size":  len(jsonData),
+			"record_count":  len(parsed),
 		}
 		if err := io.Emit("gps-delivered", payload); err != nil {
 			logger.Debug("Broadcast gps-delivered failed", zap.Error(err))
