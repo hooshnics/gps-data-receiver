@@ -17,12 +17,14 @@ The parsed GPS data is now wrapped in a `data` field before being sent to destin
         "ew": 3,
         "ns": 1
       },
-      "date_time": "2026-02-24T08:50:19Z",
+      "date_time": "2026-02-24 08:50:19",
       "imei": "861826074262144"
     }
   ]
 }
 ```
+
+**Note:** `date_time` is in MySQL datetime format: `YYYY-MM-DD HH:MM:SS`
 
 ## Single Record Example
 
@@ -43,7 +45,7 @@ The parsed GPS data is now wrapped in a `data` field before being sent to destin
         "ew": 3,
         "ns": 1
       },
-      "date_time": "2026-02-24T08:50:19Z",
+      "date_time": "2026-02-24 08:50:19",
       "imei": "861826074262144"
     }
   ]
@@ -72,7 +74,7 @@ The parsed GPS data is now wrapped in a `data` field before being sent to destin
         "ew": 3,
         "ns": 1
       },
-      "date_time": "2026-02-24T08:33:36Z",
+      "date_time": "2026-02-24 08:33:36",
       "imei": "863070043373009"
     },
     {
@@ -83,7 +85,7 @@ The parsed GPS data is now wrapped in a `data` field before being sent to destin
         "ew": 3,
         "ns": 1
       },
-      "date_time": "2026-02-24T08:33:37Z",
+      "date_time": "2026-02-24 08:33:37",
       "imei": "863070043373009"
     }
   ]
@@ -96,7 +98,8 @@ The parsed GPS data is now wrapped in a `data` field before being sent to destin
 2. **Array format**: Even single records are wrapped in an array for consistency
 3. **Sorted by time**: Records are sorted chronologically by `date_time`
 4. **Structured data**: Clean, typed JSON with proper coordinate conversion
-5. **Timezone aware**: Timestamps include Iran timezone offset (+3h 30m)
+5. **MySQL datetime format**: `date_time` uses `YYYY-MM-DD HH:MM:SS` format (compatible with MySQL)
+6. **Timezone aware**: Timestamps include Iran timezone offset (+3h 30m)
 
 ## Processing Pipeline
 

@@ -64,10 +64,10 @@ func TestParserIntegration_MultipleRecords(t *testing.T) {
 		assert.Equal(t, 1, record.Status)
 	}
 
-	// Verify chronological sorting
+	// Verify chronological sorting (string comparison works for YYYY-MM-DD HH:MM:SS)
 	for i := 1; i < len(parsed); i++ {
 		assert.True(t,
-			parsed[i-1].DateTime.Before(parsed[i].DateTime) || parsed[i-1].DateTime.Equal(parsed[i].DateTime),
+			parsed[i-1].DateTime <= parsed[i].DateTime,
 			"Records should be sorted by DateTime")
 	}
 }

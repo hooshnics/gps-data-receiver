@@ -20,7 +20,7 @@ type ParsedGPSData struct {
 	Speed      int           `json:"speed"`
 	Status     int           `json:"status"`
 	Directions DirectionData `json:"directions"`
-	DateTime   time.Time     `json:"date_time"`
+	DateTime   string        `json:"date_time"` // MySQL datetime format: YYYY-MM-DD HH:MM:SS
 	IMEI       string        `json:"imei"`
 }
 
@@ -58,9 +58,9 @@ func Parse(data []byte) ([]ParsedGPSData, error) {
 	// Process all data items
 	processedData := processDataItems(decodedData)
 
-	// Sort by date_time
+	// Sort by date_time (string comparison works for YYYY-MM-DD HH:MM:SS format)
 	sort.Slice(processedData, func(i, j int) bool {
-		return processedData[i].DateTime.Before(processedData[j].DateTime)
+		return processedData[i].DateTime < processedData[j].DateTime
 	})
 
 	return processedData, nil
@@ -197,20 +197,22 @@ func nmeaToDecimalDegrees(nmea float64) float64 {
 }
 
 // parseDateTime parses date and time strings in YYMMDD and HHMMSS format
-func parseDateTime(date, timeStr string) (time.Time, error) {
+// Returns a MySQL-compatible datetime string: YYYY-MM-DD HH:MM:SS
+func parseDateTime(date, timeStr string) (string, error) {
 	// Combine date and time: YYMMDDHHMMSS
 	combined := date + timeStr
 
 	// Parse using the format
 	t, err := time.Parse("060102150405", combined)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date/time format: %w", err)
+		return "", fmt.Errorf("invalid date/time format: %w", err)
 	}
 
 	// Add timezone offset: +3h 30m (Iran Standard Time)
 	t = t.Add(3*time.Hour + 30*time.Minute)
 
-	return t, nil
+	// Format as MySQL datetime: YYYY-MM-DD HH:MM:SS
+	return t.Format("2006-01-02 15:04:05"), nil
 }
 
 // parseFloat parses a float64 from a string
