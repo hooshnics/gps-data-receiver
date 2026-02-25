@@ -32,6 +32,12 @@ type Metrics struct {
 	// Failed Packets Metrics
 	FailedPacketsTotal prometheus.Counter
 
+	// Parser Metrics
+	ParseTotal         *prometheus.CounterVec
+	ParseDuration      prometheus.Histogram
+	RecordsParsedTotal prometheus.Counter
+	DataDroppedTotal   *prometheus.CounterVec
+
 	// Worker Metrics
 	WorkerPoolSize    prometheus.Gauge
 	WorkerActiveCount prometheus.Gauge
@@ -160,6 +166,35 @@ func InitMetrics() *Metrics {
 			},
 		),
 
+		// Parser Metrics
+		ParseTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gps_data_parse_total",
+				Help: "Total number of parse attempts",
+			},
+			[]string{"status"}, // success or failure
+		),
+		ParseDuration: promauto.NewHistogram(
+			prometheus.HistogramOpts{
+				Name:    "gps_data_parse_duration_seconds",
+				Help:    "Duration of GPS data parsing operations",
+				Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1},
+			},
+		),
+		RecordsParsedTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gps_records_parsed_total",
+				Help: "Total number of individual GPS records successfully parsed",
+			},
+		),
+		DataDroppedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gps_data_dropped_total",
+				Help: "Total number of messages dropped due to parse/validation errors",
+			},
+			[]string{"reason"}, // parse_error, empty_result, marshal_error
+		),
+
 		// Worker Metrics
 		WorkerPoolSize: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -264,4 +299,21 @@ func (m *Metrics) IncActiveWorker() {
 func (m *Metrics) DecActiveWorker() {
 	m.WorkerActiveCount.Dec()
 	m.WorkerIdleCount.Inc()
+}
+
+// RecordParseSuccess records a successful parse operation
+func (m *Metrics) RecordParseSuccess(duration time.Duration, recordCount int) {
+	m.ParseTotal.WithLabelValues("success").Inc()
+	m.ParseDuration.Observe(duration.Seconds())
+	m.RecordsParsedTotal.Add(float64(recordCount))
+}
+
+// RecordParseFailure records a failed parse operation
+func (m *Metrics) RecordParseFailure() {
+	m.ParseTotal.WithLabelValues("failure").Inc()
+}
+
+// RecordDataDropped records a dropped message
+func (m *Metrics) RecordDataDropped(reason string) {
+	m.DataDroppedTotal.WithLabelValues(reason).Inc()
 }

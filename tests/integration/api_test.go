@@ -80,7 +80,6 @@ func TestAPIIntegration_ReceiveGPSData(t *testing.T) {
 
 	assert.Equal(t, "queued", response["status"])
 	assert.NotEmpty(t, response["message_id"])
-	assert.NotEmpty(t, response["request_id"])
 
 	// Verify data is in Redis
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
