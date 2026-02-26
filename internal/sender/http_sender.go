@@ -71,6 +71,16 @@ type SendResult struct {
 // Send sends data to destination servers with retry logic and exponential backoff.
 // Each retry rotates to the next server so a single unhealthy host doesn't block the worker.
 func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
+	// Global throttle: wait 2 seconds before each send attempt for this message.
+	select {
+	case <-ctx.Done():
+		return &SendResult{
+			Success: false,
+			Error:   fmt.Errorf("context cancelled before send: %w", ctx.Err()),
+		}
+	case <-time.After(2 * time.Second):
+	}
+
 	serverCount := s.loadBalancer.ServerCount()
 	if serverCount == 0 {
 		return &SendResult{
