@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gps-data-receiver/internal/config"
@@ -17,11 +18,18 @@ import (
 	"go.uber.org/zap"
 )
 
+// sendInterval is the minimum time between consecutive HTTP requests (global across all workers).
+const sendInterval = 1 * time.Second
+
 // HTTPSender handles sending data to destination servers
 type HTTPSender struct {
 	client       *http.Client
 	loadBalancer *LoadBalancer
 	retryConfig  *config.RetryConfig
+
+	// Global rate limiting: ensures at least sendInterval between requests
+	lastSendMu   sync.Mutex
+	lastSendTime time.Time
 }
 
 // NewHTTPSender creates a new HTTP sender
@@ -71,14 +79,12 @@ type SendResult struct {
 // Send sends data to destination servers with retry logic and exponential backoff.
 // Each retry rotates to the next server so a single unhealthy host doesn't block the worker.
 func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
-	// Global throttle: wait 2 seconds before each send attempt for this message.
-	select {
-	case <-ctx.Done():
+	// Global rate limit: ensure at least sendInterval since the last request across all workers.
+	if err := s.waitForRateLimit(ctx); err != nil {
 		return &SendResult{
 			Success: false,
-			Error:   fmt.Errorf("context cancelled before send: %w", ctx.Err()),
+			Error:   fmt.Errorf("context cancelled before send: %w", err),
 		}
-	case <-time.After(2 * time.Second):
 	}
 
 	serverCount := s.loadBalancer.ServerCount()
@@ -159,6 +165,26 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 		Attempt:      s.retryConfig.MaxAttempts,
 		Error:        fmt.Errorf("max retry attempts reached: %w", lastErr),
 	}
+}
+
+// waitForRateLimit ensures at least sendInterval has passed since the last HTTP request.
+// It blocks until the interval has elapsed or the context is cancelled.
+func (s *HTTPSender) waitForRateLimit(ctx context.Context) error {
+	s.lastSendMu.Lock()
+	elapsed := time.Since(s.lastSendTime)
+	waitDuration := sendInterval - elapsed
+	if waitDuration > 0 {
+		s.lastSendMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(waitDuration):
+		}
+		s.lastSendMu.Lock()
+	}
+	s.lastSendTime = time.Now()
+	s.lastSendMu.Unlock()
+	return nil
 }
 
 // sendToServer sends data to a specific server
