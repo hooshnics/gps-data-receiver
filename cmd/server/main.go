@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
+	"github.com/gps-data-receiver/internal/filter"
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
@@ -65,6 +66,19 @@ func main() {
 	httpSender := sender.NewHTTPSender(cfg)
 	defer httpSender.Close()
 
+	// Initialize stoppage filter
+	stoppageFilter := filter.NewStoppageFilter(
+		redisQueue.GetClient(),
+		cfg.Filter.Enabled,
+		cfg.Filter.RedisSyncInterval,
+	)
+	stoppageFilter.Start()
+	defer stoppageFilter.Close()
+
+	logger.Info("Stoppage filter initialized",
+		zap.Bool("enabled", cfg.Filter.Enabled),
+		zap.Duration("sync_interval", cfg.Filter.RedisSyncInterval))
+
 	// Socket.IO for real-time broadcast (received + delivered). Created early so messageHandler can emit delivered events.
 	io := socketio.New()
 
@@ -111,9 +125,32 @@ func main() {
 			zap.Int("record_count", len(parsed)),
 			zap.Duration("parse_duration", parseDuration))
 
-		// 3. Wrap parsed data in "data" field and re-encode as JSON for destination
+		// 3. Filter redundant stoppage data
+		filteredData := stoppageFilter.FilterData(parsed)
+
+		// Handle case where all records were filtered
+		if len(filteredData) == 0 {
+			logger.Debug("All records filtered (redundant stoppages) - ACKing message",
+				zap.Int("original_count", len(parsed)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordStoppageFiltered(len(parsed))
+			}
+			return nil // ACK message without sending
+		}
+
+		// Record filtering metrics
+		if len(filteredData) < len(parsed) && metrics.AppMetrics != nil {
+			filteredCount := len(parsed) - len(filteredData)
+			metrics.AppMetrics.RecordStoppageFiltered(filteredCount)
+			logger.Info("Filtered redundant stoppage records",
+				zap.Int("original_count", len(parsed)),
+				zap.Int("filtered_count", len(filteredData)),
+				zap.Int("removed_count", filteredCount))
+		}
+
+		// 4. Wrap filtered data in "data" field and re-encode as JSON for destination
 		wrappedData := map[string]interface{}{
-			"data": parsed,
+			"data": filteredData,
 		}
 		jsonData, err := json.Marshal(wrappedData)
 		if err != nil {
@@ -125,7 +162,7 @@ func main() {
 			return nil // Return nil to ACK and drop the message
 		}
 
-		// 4. Send parsed data to destination servers
+		// 5. Send filtered data to destination servers
 		result := httpSender.Send(ctx, jsonData)
 
 		if metrics.AppMetrics != nil {
@@ -285,6 +322,10 @@ func main() {
 				metrics.AppMetrics.SetWorkerPoolSize(cfg.Worker.Count)
 
 				activeWorkers := consumer.GetActiveWorkerCount()
+
+				// Update filter state count metric
+				filterStateCount := stoppageFilter.GetStateCount()
+				metrics.AppMetrics.UpdateFilterStateCount(filterStateCount)
 
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
