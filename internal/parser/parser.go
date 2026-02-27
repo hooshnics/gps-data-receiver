@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	gojson "github.com/goccy/go-json"
 	"github.com/gps-data-receiver/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -83,9 +83,9 @@ func decodeJSONData(jsonData string) ([]DataItem, error) {
 	// Remove trailing commas
 	trimmedData = strings.TrimRight(trimmedData, ",")
 
-	// Decode JSON
+	// Decode JSON using faster go-json library
 	var decodedData []DataItem
-	if err := json.Unmarshal([]byte(trimmedData), &decodedData); err != nil {
+	if err := gojson.Unmarshal([]byte(trimmedData), &decodedData); err != nil {
 		logger.Debug("Failed to decode JSON",
 			zap.Error(err),
 			zap.String("cleaned_data", trimmedData))
@@ -163,7 +163,13 @@ func processDataItem(data string) (*ParsedGPSData, error) {
 }
 
 // isValidDataFormat validates if the data follows the expected GPS device format
+// Uses length pre-check to avoid expensive regex on obviously invalid data
 func isValidDataFormat(data string) bool {
+	// Quick length check before regex (GPS data is typically 75-95 chars)
+	n := len(data)
+	if n < 70 || n > 100 {
+		return false
+	}
 	return gpsDataPattern.MatchString(data)
 }
 

@@ -125,68 +125,94 @@ type rateLimiterEntry struct {
 	lastSeen time.Time
 }
 
-// RateLimiter holds rate limiting configuration per IP
-type RateLimiter struct {
+// rateLimiterShard is a single shard of the rate limiter
+type rateLimiterShard struct {
 	limiters map[string]*rateLimiterEntry
 	mu       sync.RWMutex
-	rate     rate.Limit
-	burst    int
 }
 
-// NewRateLimiter creates a new rate limiter and starts a background goroutine
-// that evicts entries not seen in the last 10 minutes.
+// shardCount determines the number of shards (must be power of 2 for fast modulo)
+const shardCount = 256
+
+// RateLimiter holds rate limiting configuration per IP using sharding to reduce contention
+type RateLimiter struct {
+	shards [shardCount]*rateLimiterShard
+	rate   rate.Limit
+	burst  int
+}
+
+// NewRateLimiter creates a new sharded rate limiter and starts background cleanup goroutines.
 func NewRateLimiter(requestsPerSecond, burst int) *RateLimiter {
 	rl := &RateLimiter{
-		limiters: make(map[string]*rateLimiterEntry),
-		rate:     rate.Limit(requestsPerSecond),
-		burst:    burst,
+		rate:  rate.Limit(requestsPerSecond),
+		burst: burst,
 	}
+
+	for i := 0; i < shardCount; i++ {
+		rl.shards[i] = &rateLimiterShard{
+			limiters: make(map[string]*rateLimiterEntry),
+		}
+	}
+
 	go rl.cleanupLoop()
 	return rl
+}
+
+// getShard returns the shard for a given IP using FNV-1a hash
+func (rl *RateLimiter) getShard(ip string) *rateLimiterShard {
+	h := uint32(2166136261) // FNV-1a offset basis
+	for i := 0; i < len(ip); i++ {
+		h ^= uint32(ip[i])
+		h *= 16777619 // FNV-1a prime
+	}
+	return rl.shards[h&(shardCount-1)] // Fast modulo for power of 2
 }
 
 // getLimiter gets or creates a limiter for an IP
 func (rl *RateLimiter) getLimiter(ip string) *rate.Limiter {
 	now := time.Now()
+	shard := rl.getShard(ip)
 
-	rl.mu.RLock()
-	entry, exists := rl.limiters[ip]
-	rl.mu.RUnlock()
+	shard.mu.RLock()
+	entry, exists := shard.limiters[ip]
+	shard.mu.RUnlock()
 
 	if exists {
 		entry.lastSeen = now
 		return entry.limiter
 	}
 
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	entry, exists = rl.limiters[ip]
+	entry, exists = shard.limiters[ip]
 	if exists {
 		entry.lastSeen = now
 		return entry.limiter
 	}
 
 	limiter := rate.NewLimiter(rl.rate, rl.burst)
-	rl.limiters[ip] = &rateLimiterEntry{limiter: limiter, lastSeen: now}
+	shard.limiters[ip] = &rateLimiterEntry{limiter: limiter, lastSeen: now}
 
 	return limiter
 }
 
-// cleanupLoop evicts stale entries every 5 minutes.
+// cleanupLoop evicts stale entries from all shards every 5 minutes.
 func (rl *RateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		rl.mu.Lock()
 		cutoff := time.Now().Add(-10 * time.Minute)
-		for ip, entry := range rl.limiters {
-			if entry.lastSeen.Before(cutoff) {
-				delete(rl.limiters, ip)
+		for _, shard := range rl.shards {
+			shard.mu.Lock()
+			for ip, entry := range shard.limiters {
+				if entry.lastSeen.Before(cutoff) {
+					delete(shard.limiters, ip)
+				}
 			}
+			shard.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
