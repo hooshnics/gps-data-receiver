@@ -6,47 +6,7 @@
       </div>
 
       <div class="grid grid-cols-1 gap-6">
-        <!-- Top: Received packets -->
-        <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
-            <h2 class="text-lg font-semibold text-slate-800">
-              داده‌های دریافتی
-              <span class="ml-2 font-normal text-slate-500">({{ packets.length }} مورد)</span>
-            </h2>
-          </div>
-          <div class="max-h-[70vh] overflow-y-auto">
-            <ul v-if="packets.length" class="divide-y divide-slate-200">
-              <li
-                v-for="(pkt, index) in packets"
-                :key="pkt.message_id + '-' + index"
-                class="px-4 py-3 sm:px-6 hover:bg-slate-50/50"
-              >
-                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span class="font-mono text-sm font-medium text-slate-700">
-                    {{ pkt.message_id }}
-                  </span>
-                  <span class="text-xs text-slate-500">
-                    {{ formatTime(pkt.received_at) }}
-                  </span>
-                  <span class="text-xs text-slate-400">
-                    {{ pkt.payload_size }} bytes
-                  </span>
-                </div>
-                <pre
-                  class="mt-2 overflow-x-auto rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700"
-                >{{ payloadPreview(pkt.payload) }}</pre>
-              </li>
-            </ul>
-            <div
-              v-else
-              class="px-4 py-12 text-center text-sm text-slate-500"
-            >
-              هنوز داده‌ای دریافت نشده است
-            </div>
-          </div>
-        </div>
-
-        <!-- Bottom: Delivered to destination servers -->
+        <!-- Top: Delivered to destination servers -->
         <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
@@ -70,11 +30,7 @@
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100 bg-white">
-                  <tr
-                    v-for="(row, index) in deliveredRows"
-                    :key="row.key || index"
-                    class="hover:bg-slate-50/60"
-                  >
+                  <tr v-for="(row, index) in deliveredRows" :key="row.key || index" class="hover:bg-slate-50/60">
                     <td class="whitespace-nowrap px-4 py-2 text-center text-xs text-slate-500">
                       {{ index + 1 }}
                     </td>
@@ -103,11 +59,40 @@
                 </tbody>
               </table>
             </div>
-            <div
-              v-else
-              class="px-4 py-12 text-center text-sm text-slate-500"
-            >
+            <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
               هنوز داده‌ای به سرورها ارسال نشده است
+            </div>
+          </div>
+        </div>
+        <!-- Bottom: Received packets -->
+        <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
+            <h2 class="text-lg font-semibold text-slate-800">
+              داده‌های دریافتی
+              <span class="ml-2 font-normal text-slate-500">({{ packets.length }} مورد)</span>
+            </h2>
+          </div>
+          <div class="max-h-[70vh] overflow-y-auto">
+            <ul v-if="packets.length" class="divide-y divide-slate-200">
+              <li v-for="(pkt, index) in packets" :key="pkt.message_id + '-' + index"
+                class="px-4 py-3 sm:px-6 hover:bg-slate-50/50">
+                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span class="font-mono text-sm font-medium text-slate-700">
+                    {{ pkt.message_id }}
+                  </span>
+                  <span class="text-xs text-slate-500">
+                    {{ formatTime(pkt.received_at) }}
+                  </span>
+                  <span class="text-xs text-slate-400">
+                    {{ pkt.payload_size }} bytes
+                  </span>
+                </div>
+                <pre
+                  class="mt-2 overflow-x-auto rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700">{{ payloadPreview(pkt.payload) }}</pre>
+              </li>
+            </ul>
+            <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
+              هنوز داده‌ای دریافت نشده است
             </div>
           </div>
         </div>
