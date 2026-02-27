@@ -5,8 +5,8 @@
         {{ error }}
       </div>
 
-      <div class="grid grid-cols-1 gap-6">
-        <!-- Top: Delivered to destination servers -->
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <!-- Right: Delivered to destination servers -->
         <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
@@ -64,7 +64,7 @@
             </div>
           </div>
         </div>
-        <!-- Bottom: Received packets -->
+        <!-- Left: Received packets -->
         <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
