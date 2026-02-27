@@ -46,6 +46,10 @@ type Metrics struct {
 	// Rate Limiting Metrics
 	RateLimitHits *prometheus.CounterVec
 
+	// Filter Metrics
+	StoppageRecordsFilteredTotal prometheus.Counter
+	FilterStateCount             prometheus.Gauge
+
 	// System Metrics (Go runtime)
 	// These are automatically collected by Prometheus Go client
 }
@@ -223,6 +227,20 @@ func InitMetrics() *Metrics {
 			},
 			[]string{"client_ip"},
 		),
+
+		// Filter Metrics
+		StoppageRecordsFilteredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gps_receiver_stoppage_records_filtered_total",
+				Help: "Total number of redundant stoppage records filtered",
+			},
+		),
+		FilterStateCount: promauto.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gps_receiver_filter_state_count",
+				Help: "Number of IMEIs being tracked by stoppage filter",
+			},
+		),
 	}
 
 	AppMetrics = m
@@ -316,4 +334,14 @@ func (m *Metrics) RecordParseFailure() {
 // RecordDataDropped records a dropped message
 func (m *Metrics) RecordDataDropped(reason string) {
 	m.DataDroppedTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordStoppageFiltered records filtered stoppage records
+func (m *Metrics) RecordStoppageFiltered(count int) {
+	m.StoppageRecordsFilteredTotal.Add(float64(count))
+}
+
+// UpdateFilterStateCount updates the filter state count metric
+func (m *Metrics) UpdateFilterStateCount(count int) {
+	m.FilterStateCount.Set(float64(count))
 }

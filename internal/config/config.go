@@ -19,6 +19,7 @@ type Config struct {
 	HTTP      HTTPConfig
 	RateLimit RateLimitConfig
 	Logging   LoggingConfig
+	Filter    FilterConfig
 }
 
 // ServerConfig holds server configuration
@@ -75,6 +76,12 @@ type LoggingConfig struct {
 	Format string
 }
 
+// FilterConfig holds stoppage filter configuration
+type FilterConfig struct {
+	Enabled           bool
+	RedisSyncInterval time.Duration
+}
+
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if not found)
@@ -120,6 +127,10 @@ func Load() (*Config, error) {
 		Logging: LoggingConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
+		},
+		Filter: FilterConfig{
+			Enabled:           getBool("FILTER_ENABLED", true),
+			RedisSyncInterval: getDuration("FILTER_REDIS_SYNC_INTERVAL", 30*time.Second),
 		},
 	}
 
@@ -194,6 +205,19 @@ func getSlice(key string, defaultValue []string) []string {
 		}
 	}
 	return result
+}
+
+// getBool gets a boolean environment variable or returns a default value
+func getBool(key string, defaultValue bool) bool {
+	valueStr := os.Getenv(key)
+	if valueStr == "" {
+		return defaultValue
+	}
+	value, err := strconv.ParseBool(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }
 
 // GetRedisAddr returns the Redis address
