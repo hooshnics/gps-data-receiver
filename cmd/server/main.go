@@ -2,17 +2,18 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	gojson "github.com/goccy/go-json"
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/internal/filter"
@@ -28,60 +29,51 @@ import (
 	"go.uber.org/zap"
 )
 
-// filterOldData filters out GPS records older than the specified max age
-func filterOldData(data []parser.ParsedGPSData, maxAge time.Duration) []parser.ParsedGPSData {
-	if len(data) == 0 {
-		return data
-	}
-
-	now := time.Now()
-	filtered := make([]parser.ParsedGPSData, 0, len(data))
-
-	for _, record := range data {
-		// Parse the record's datetime (format: "2006-01-02 15:04:05")
-		// ParseInLocation parses in local timezone instead of UTC
-		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
-		if err != nil {
-			// If we can't parse the time, include the record (fail-open)
-			logger.Warn("Failed to parse record datetime, including record",
-				zap.String("datetime", record.DateTime),
-				zap.String("imei", record.IMEI),
-				zap.Error(err))
-			filtered = append(filtered, record)
-			continue
-		}
-
-		// Calculate age
-		age := now.Sub(recordTime)
-
-		if age <= maxAge {
-			// Record is recent enough, include it
-			filtered = append(filtered, record)
-		} else {
-			// Record is too old, filter it out
-			logger.Debug("Filtered old GPS record",
-				zap.String("imei", record.IMEI),
-				zap.String("datetime", record.DateTime),
-				zap.Duration("age", age),
-				zap.Duration("max_age", maxAge))
-		}
-	}
-
-	return filtered
+// parsedDataPool reduces GC pressure by pooling slice allocations for parsed GPS data
+var parsedDataPool = sync.Pool{
+	New: func() interface{} {
+		s := make([]parser.ParsedGPSData, 0, 64)
+		return &s
+	},
 }
 
-// filterFutureData filters out GPS records with timestamps in the future (beyond tolerance)
-func filterFutureData(data []parser.ParsedGPSData, tolerance time.Duration) []parser.ParsedGPSData {
+// getParsedDataSlice gets a slice from the pool
+func getParsedDataSlice() *[]parser.ParsedGPSData {
+	return parsedDataPool.Get().(*[]parser.ParsedGPSData)
+}
+
+// putParsedDataSlice returns a slice to the pool after resetting it
+func putParsedDataSlice(s *[]parser.ParsedGPSData) {
+	*s = (*s)[:0]
+	parsedDataPool.Put(s)
+}
+
+// TimeFilterResult holds the result of time-based filtering
+type TimeFilterResult struct {
+	Data        []parser.ParsedGPSData
+	OldCount    int
+	FutureCount int
+}
+
+// filterByTime filters GPS records by time constraints in a single pass.
+// It removes records older than maxAge and records with timestamps too far in the future.
+// The filtered slice is written to the provided destination to enable pooling.
+func filterByTime(data []parser.ParsedGPSData, maxAge, futureTolerance time.Duration, dest *[]parser.ParsedGPSData) TimeFilterResult {
+	result := TimeFilterResult{}
+
 	if len(data) == 0 {
-		return data
+		result.Data = data
+		return result
 	}
 
 	now := time.Now()
-	filtered := make([]parser.ParsedGPSData, 0, len(data))
+	cutoffOld := now.Add(-maxAge)
+	cutoffFuture := now.Add(futureTolerance)
 
-	for _, record := range data {
+	for i := range data {
+		record := &data[i]
+
 		// Parse the record's datetime (format: "2006-01-02 15:04:05")
-		// ParseInLocation parses in local timezone instead of UTC
 		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
 		if err != nil {
 			// If we can't parse the time, include the record (fail-open)
@@ -89,28 +81,28 @@ func filterFutureData(data []parser.ParsedGPSData, tolerance time.Duration) []pa
 				zap.String("datetime", record.DateTime),
 				zap.String("imei", record.IMEI),
 				zap.Error(err))
-			filtered = append(filtered, record)
+			*dest = append(*dest, *record)
 			continue
 		}
 
-		// Calculate how far in the future this record is
-		futureOffset := recordTime.Sub(now)
-
-		// Allow past data (negative offset) and future data within tolerance
-		if futureOffset <= 0 || futureOffset <= tolerance {
-			// Record is in the past or within acceptable future range
-			filtered = append(filtered, record)
-		} else {
-			// Record is too far in the future, filter it out
-			logger.Debug("Filtered future GPS record",
-				zap.String("imei", record.IMEI),
-				zap.String("datetime", record.DateTime),
-				zap.Duration("future_offset", futureOffset),
-				zap.Duration("tolerance", tolerance))
+		// Check if record is too old
+		if recordTime.Before(cutoffOld) {
+			result.OldCount++
+			continue
 		}
+
+		// Check if record is too far in the future
+		if recordTime.After(cutoffFuture) {
+			result.FutureCount++
+			continue
+		}
+
+		// Record passed all time filters
+		*dest = append(*dest, *record)
 	}
 
-	return filtered
+	result.Data = *dest
+	return result
 }
 
 func main() {
@@ -136,9 +128,16 @@ func main() {
 	metrics.InitMetrics()
 	logger.Info("Prometheus metrics initialized")
 
-	// Initialize request tracker (max 10000 requests in memory)
-	tracking.InitGlobalTracker(10000)
-	logger.Info("Request tracking initialized")
+	// Initialize request tracker with sampling support for high throughput
+	tracking.InitGlobalTrackerWithConfig(
+		cfg.Tracking.MaxRequests,
+		cfg.Tracking.SampleRate,
+		cfg.Tracking.Enabled,
+	)
+	logger.Info("Request tracking initialized",
+		zap.Bool("enabled", cfg.Tracking.Enabled),
+		zap.Float64("sample_rate", cfg.Tracking.SampleRate),
+		zap.Int("max_requests", cfg.Tracking.MaxRequests))
 
 	// Initialize Redis queue
 	redisQueue, err := queue.NewRedisQueue(&cfg.Redis)
@@ -166,6 +165,12 @@ func main() {
 
 	// Socket.IO for real-time broadcast (received + delivered). Created early so messageHandler can emit delivered events.
 	io := socketio.New()
+
+	// Wrap Socket.IO with async broadcaster for non-blocking high-throughput broadcasts
+	asyncBroadcaster := api.NewAsyncBroadcaster(io, 10000)
+	if asyncBroadcaster != nil {
+		defer asyncBroadcaster.Close()
+	}
 
 	// Create message handler that sends data to destination servers and broadcasts on success
 	messageHandler := func(ctx context.Context, data []byte) error {
@@ -210,53 +215,44 @@ func main() {
 			zap.Int("record_count", len(parsed)),
 			zap.Duration("parse_duration", parseDuration))
 
-		// 3. Filter old data (older than 2 days)
-		ageFilteredData := filterOldData(parsed, 48*time.Hour)
+		// 3. Filter by time (combines old data + future data filtering in single pass)
+		// Uses pooled slice to reduce allocations
+		timeFilteredSlice := getParsedDataSlice()
+		timeFilterResult := filterByTime(parsed, 48*time.Hour, 5*time.Minute, timeFilteredSlice)
+		timeFilteredData := timeFilterResult.Data
 
-		if len(ageFilteredData) < len(parsed) {
-			oldCount := len(parsed) - len(ageFilteredData)
+		// Log and record metrics for filtered records
+		if timeFilterResult.OldCount > 0 {
 			logger.Info("Filtered old GPS records",
 				zap.Int("original_count", len(parsed)),
-				zap.Int("filtered_count", len(ageFilteredData)),
-				zap.Int("old_records", oldCount))
+				zap.Int("old_records", timeFilterResult.OldCount))
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordDataDropped("old_data")
 			}
 		}
-
-		// Handle case where all records were filtered due to age
-		if len(ageFilteredData) == 0 {
-			logger.Debug("All records filtered (too old) - ACKing message",
-				zap.Int("original_count", len(parsed)))
-			return nil // ACK message without sending
-		}
-
-		// 4. Filter future data (tolerance: 5 minutes for clock drift)
-		timeFilteredData := filterFutureData(ageFilteredData, 5*time.Minute)
-
-		if len(timeFilteredData) < len(ageFilteredData) {
-			futureCount := len(ageFilteredData) - len(timeFilteredData)
+		if timeFilterResult.FutureCount > 0 {
 			logger.Info("Filtered future GPS records",
-				zap.Int("original_count", len(ageFilteredData)),
-				zap.Int("filtered_count", len(timeFilteredData)),
-				zap.Int("future_records", futureCount))
+				zap.Int("original_count", len(parsed)),
+				zap.Int("future_records", timeFilterResult.FutureCount))
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordDataDropped("future_data")
 			}
 		}
 
-		// Handle case where all records were filtered due to future timestamps
+		// Handle case where all records were filtered due to time constraints
 		if len(timeFilteredData) == 0 {
-			logger.Debug("All records filtered (future timestamps) - ACKing message",
-				zap.Int("original_count", len(ageFilteredData)))
+			putParsedDataSlice(timeFilteredSlice)
+			logger.Debug("All records filtered (time constraints) - ACKing message",
+				zap.Int("original_count", len(parsed)))
 			return nil // ACK message without sending
 		}
 
-		// 5. Filter redundant stoppage data
+		// 4. Filter redundant stoppage data
 		filteredData := stoppageFilter.FilterData(timeFilteredData)
 
 		// Handle case where all records were filtered
 		if len(filteredData) == 0 {
+			putParsedDataSlice(timeFilteredSlice)
 			logger.Debug("All records filtered (redundant stoppages) - ACKing message",
 				zap.Int("original_count", len(parsed)))
 			if metrics.AppMetrics != nil {
@@ -275,12 +271,14 @@ func main() {
 				zap.Int("removed_count", filteredCount))
 		}
 
-		// 6. Wrap filtered data in "data" field and re-encode as JSON for destination
+		// 5. Wrap filtered data in "data" field and re-encode as JSON for destination
+		// Using goccy/go-json for faster marshaling
 		wrappedData := map[string]interface{}{
 			"data": filteredData,
 		}
-		jsonData, err := json.Marshal(wrappedData)
+		jsonData, err := gojson.Marshal(wrappedData)
 		if err != nil {
+			putParsedDataSlice(timeFilteredSlice)
 			logger.Error("Failed to marshal parsed data - dropping message",
 				zap.Error(err))
 			if metrics.AppMetrics != nil {
@@ -289,7 +287,10 @@ func main() {
 			return nil // Return nil to ACK and drop the message
 		}
 
-		// 7. Send filtered data to destination servers
+		// Return pooled slice now that we've serialized the data
+		putParsedDataSlice(timeFilteredSlice)
+
+		// 6. Send filtered data to destination servers
 		result := httpSender.Send(ctx, jsonData)
 
 		if metrics.AppMetrics != nil {
@@ -304,16 +305,16 @@ func main() {
 			return result.Error
 		}
 
-		// Broadcast delivered packet to frontend (same pattern as received in handler)
-		payload := map[string]interface{}{
-			"delivered_at":  time.Now().UTC().Format(time.RFC3339),
-			"target_server": result.TargetServer,
-			"payload":       string(jsonData),
-			"payload_size":  len(jsonData),
-			"record_count":  len(parsed),
-		}
-		if err := io.Emit("gps-delivered", payload); err != nil {
-			logger.Debug("Broadcast gps-delivered failed", zap.Error(err))
+		// Broadcast delivered packet to frontend (async, non-blocking)
+		if asyncBroadcaster != nil {
+			payload := map[string]interface{}{
+				"delivered_at":  time.Now().UTC().Format(time.RFC3339),
+				"target_server": result.TargetServer,
+				"payload":       string(jsonData),
+				"payload_size":  len(jsonData),
+				"record_count":  len(parsed),
+			}
+			asyncBroadcaster.Emit("gps-delivered", payload)
 		}
 
 		return nil
@@ -371,7 +372,8 @@ func main() {
 	logger.Info("Socket.IO enabled at /socket.io/")
 
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, io)
+	// Use async broadcaster for non-blocking Socket.IO emissions
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, asyncBroadcaster)
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
@@ -429,14 +431,16 @@ func main() {
 		logger.Info("Frontend not built (web/dist missing); serving status at /")
 	}
 
-	// Create HTTP server
+	// Create HTTP server with optimized settings for high throughput
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
-		Addr:           addr,
-		Handler:        router,
-		ReadTimeout:    cfg.Server.RequestTimeout,
-		WriteTimeout:   cfg.Server.RequestTimeout + 5*time.Second,
-		MaxHeaderBytes: 1 << 20, // 1MB
+		Addr:              addr,
+		Handler:           router,
+		ReadTimeout:       cfg.Server.RequestTimeout,
+		ReadHeaderTimeout: 2 * time.Second,
+		WriteTimeout:      cfg.Server.RequestTimeout + 5*time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 16, // 64KB (reduced for GPS data which has small headers)
 	}
 
 	// Start background metrics updater (more frequent updates for better monitoring)

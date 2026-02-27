@@ -30,10 +30,10 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "6379", cfg.Redis.Port)
 	assert.Equal(t, 0, cfg.Redis.DB)
 
-	assert.Equal(t, 50, cfg.Worker.Count)
+	assert.Equal(t, 100, cfg.Worker.Count) // Updated default for 10K RPS
 	assert.Equal(t, 3, cfg.Retry.MaxAttempts)
-	assert.Equal(t, 1*time.Second, cfg.Retry.DelayFirst)
-	assert.Equal(t, 2*time.Second, cfg.Retry.DelaySubsequent)
+	assert.Equal(t, 500*time.Millisecond, cfg.Retry.DelayFirst) // Updated default for faster retries
+	assert.Equal(t, 1*time.Second, cfg.Retry.DelaySubsequent)   // Updated default for faster retries
 }
 
 func TestLoadConfig_CustomValues(t *testing.T) {

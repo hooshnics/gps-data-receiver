@@ -20,6 +20,67 @@ type BroadcastEmitter interface {
 	Emit(event string, args ...interface{}) error
 }
 
+// broadcastMessage represents a message to be broadcast asynchronously
+type broadcastMessage struct {
+	event   string
+	payload interface{}
+}
+
+// AsyncBroadcaster wraps a BroadcastEmitter with an async channel for non-blocking broadcasts
+type AsyncBroadcaster struct {
+	emitter BroadcastEmitter
+	ch      chan broadcastMessage
+	done    chan struct{}
+}
+
+// NewAsyncBroadcaster creates a new async broadcaster with the specified buffer size
+func NewAsyncBroadcaster(emitter BroadcastEmitter, bufferSize int) *AsyncBroadcaster {
+	if emitter == nil {
+		return nil
+	}
+	ab := &AsyncBroadcaster{
+		emitter: emitter,
+		ch:      make(chan broadcastMessage, bufferSize),
+		done:    make(chan struct{}),
+	}
+	go ab.worker()
+	return ab
+}
+
+// Emit queues a message for async broadcast (non-blocking, drops if buffer full)
+func (ab *AsyncBroadcaster) Emit(event string, args ...interface{}) error {
+	if len(args) == 0 {
+		return nil
+	}
+	select {
+	case ab.ch <- broadcastMessage{event: event, payload: args[0]}:
+	default:
+		// Buffer full, drop message (non-blocking for high throughput)
+	}
+	return nil
+}
+
+// worker processes broadcast messages from the channel
+func (ab *AsyncBroadcaster) worker() {
+	for {
+		select {
+		case <-ab.done:
+			return
+		case msg := <-ab.ch:
+			if err := ab.emitter.Emit(msg.event, msg.payload); err != nil {
+				logger.Debug("Async broadcast failed",
+					zap.String("event", msg.event),
+					zap.Error(err))
+			}
+		}
+	}
+}
+
+// Close stops the async broadcaster
+func (ab *AsyncBroadcaster) Close() {
+	close(ab.done)
+}
+
 // Handler handles HTTP requests
 type Handler struct {
 	queue             *queue.RedisQueue

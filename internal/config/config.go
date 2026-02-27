@@ -20,6 +20,7 @@ type Config struct {
 	RateLimit RateLimitConfig
 	Logging   LoggingConfig
 	Filter    FilterConfig
+	Tracking  TrackingConfig
 }
 
 // ServerConfig holds server configuration
@@ -82,6 +83,13 @@ type FilterConfig struct {
 	RedisSyncInterval time.Duration
 }
 
+// TrackingConfig holds request tracking configuration
+type TrackingConfig struct {
+	Enabled     bool
+	SampleRate  float64 // 0.0-1.0, percentage of requests to track (1.0 = 100%)
+	MaxRequests int     // Maximum requests to keep in memory
+}
+
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if not found)
@@ -101,28 +109,28 @@ func Load() (*Config, error) {
 			DB:                     getInt("REDIS_DB", 0),
 			StreamName:             getEnv("REDIS_STREAM_NAME", "gps:reports"),
 			ConsumerGroup:          getEnv("REDIS_CONSUMER_GROUP", "gps-workers"),
-			MaxLen:                 getInt64("REDIS_MAX_LEN", 10000),
-			PoolSize:               getInt("REDIS_POOL_SIZE", 200),
+			MaxLen:                 getInt64("REDIS_MAX_LEN", 50000),        // Increased for 10K RPS
+			PoolSize:               getInt("REDIS_POOL_SIZE", 500),          // Increased for 10K RPS
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
 		},
 		Worker: WorkerConfig{
-			Count:     getInt("WORKER_COUNT", 50),
-			BatchSize: getInt("WORKER_BATCH_SIZE", 50),
+			Count:     getInt("WORKER_COUNT", 100),      // Increased for 10K RPS
+			BatchSize: getInt("WORKER_BATCH_SIZE", 100), // Increased for 10K RPS
 		},
 		Retry: RetryConfig{
 			MaxAttempts:     getInt("MAX_RETRY_ATTEMPTS", 3),
-			DelayFirst:      getDuration("RETRY_DELAY_FIRST", 1*time.Second),
-			DelaySubsequent: getDuration("RETRY_DELAY_SUBSEQUENT", 2*time.Second),
+			DelayFirst:      getDuration("RETRY_DELAY_FIRST", 500*time.Millisecond), // Reduced for faster retries
+			DelaySubsequent: getDuration("RETRY_DELAY_SUBSEQUENT", 1*time.Second),
 		},
 		HTTP: HTTPConfig{
-			Timeout:            getDuration("HTTP_CLIENT_TIMEOUT", 15*time.Second),
-			MaxIdleConns:       getInt("HTTP_CLIENT_MAX_IDLE_CONNS", 200),
-			MaxConnsPerHost:    getInt("HTTP_CLIENT_MAX_CONNS_PER_HOST", 60),
+			Timeout:            getDuration("HTTP_CLIENT_TIMEOUT", 10*time.Second), // Reduced timeout
+			MaxIdleConns:       getInt("HTTP_CLIENT_MAX_IDLE_CONNS", 500),          // Increased for 10K RPS
+			MaxConnsPerHost:    getInt("HTTP_CLIENT_MAX_CONNS_PER_HOST", 100),      // Increased for 10K RPS
 			DestinationServers: getSlice("DESTINATION_SERVERS", []string{}),
 		},
 		RateLimit: RateLimitConfig{
-			RequestsPerSecond: getInt("RATE_LIMIT_REQUESTS_PER_SECOND", 1000),
-			Burst:             getInt("RATE_LIMIT_BURST", 2000),
+			RequestsPerSecond: getInt("RATE_LIMIT_REQUESTS_PER_SECOND", 15000), // Increased for 10K RPS
+			Burst:             getInt("RATE_LIMIT_BURST", 20000),               // Increased for 10K RPS
 		},
 		Logging: LoggingConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
@@ -131,6 +139,11 @@ func Load() (*Config, error) {
 		Filter: FilterConfig{
 			Enabled:           getBool("FILTER_ENABLED", true),
 			RedisSyncInterval: getDuration("FILTER_REDIS_SYNC_INTERVAL", 30*time.Second),
+		},
+		Tracking: TrackingConfig{
+			Enabled:     getBool("TRACKING_ENABLED", true),
+			SampleRate:  getFloat64("TRACKING_SAMPLE_RATE", 0.01), // 1% sampling by default
+			MaxRequests: getInt("TRACKING_MAX_REQUESTS", 10000),
 		},
 	}
 
@@ -214,6 +227,19 @@ func getBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	value, err := strconv.ParseBool(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// getFloat64 gets a float64 environment variable or returns a default value
+func getFloat64(key string, defaultValue float64) float64 {
+	valueStr := os.Getenv(key)
+	if valueStr == "" {
+		return defaultValue
+	}
+	value, err := strconv.ParseFloat(valueStr, 64)
 	if err != nil {
 		return defaultValue
 	}
