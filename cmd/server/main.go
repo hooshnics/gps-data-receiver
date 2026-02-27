@@ -28,6 +28,91 @@ import (
 	"go.uber.org/zap"
 )
 
+// filterOldData filters out GPS records older than the specified max age
+func filterOldData(data []parser.ParsedGPSData, maxAge time.Duration) []parser.ParsedGPSData {
+	if len(data) == 0 {
+		return data
+	}
+
+	now := time.Now()
+	filtered := make([]parser.ParsedGPSData, 0, len(data))
+
+	for _, record := range data {
+		// Parse the record's datetime (format: "2006-01-02 15:04:05")
+		// ParseInLocation parses in local timezone instead of UTC
+		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
+		if err != nil {
+			// If we can't parse the time, include the record (fail-open)
+			logger.Warn("Failed to parse record datetime, including record",
+				zap.String("datetime", record.DateTime),
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			filtered = append(filtered, record)
+			continue
+		}
+
+		// Calculate age
+		age := now.Sub(recordTime)
+
+		if age <= maxAge {
+			// Record is recent enough, include it
+			filtered = append(filtered, record)
+		} else {
+			// Record is too old, filter it out
+			logger.Debug("Filtered old GPS record",
+				zap.String("imei", record.IMEI),
+				zap.String("datetime", record.DateTime),
+				zap.Duration("age", age),
+				zap.Duration("max_age", maxAge))
+		}
+	}
+
+	return filtered
+}
+
+// filterFutureData filters out GPS records with timestamps in the future (beyond tolerance)
+func filterFutureData(data []parser.ParsedGPSData, tolerance time.Duration) []parser.ParsedGPSData {
+	if len(data) == 0 {
+		return data
+	}
+
+	now := time.Now()
+	filtered := make([]parser.ParsedGPSData, 0, len(data))
+
+	for _, record := range data {
+		// Parse the record's datetime (format: "2006-01-02 15:04:05")
+		// ParseInLocation parses in local timezone instead of UTC
+		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
+		if err != nil {
+			// If we can't parse the time, include the record (fail-open)
+			logger.Warn("Failed to parse record datetime, including record",
+				zap.String("datetime", record.DateTime),
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			filtered = append(filtered, record)
+			continue
+		}
+
+		// Calculate how far in the future this record is
+		futureOffset := recordTime.Sub(now)
+
+		// Allow past data (negative offset) and future data within tolerance
+		if futureOffset <= 0 || futureOffset <= tolerance {
+			// Record is in the past or within acceptable future range
+			filtered = append(filtered, record)
+		} else {
+			// Record is too far in the future, filter it out
+			logger.Debug("Filtered future GPS record",
+				zap.String("imei", record.IMEI),
+				zap.String("datetime", record.DateTime),
+				zap.Duration("future_offset", futureOffset),
+				zap.Duration("tolerance", tolerance))
+		}
+	}
+
+	return filtered
+}
+
 func main() {
 	// Load configuration
 	cfg, err := config.Load()
@@ -125,8 +210,50 @@ func main() {
 			zap.Int("record_count", len(parsed)),
 			zap.Duration("parse_duration", parseDuration))
 
-		// 3. Filter redundant stoppage data
-		filteredData := stoppageFilter.FilterData(parsed)
+		// 3. Filter old data (older than 2 days)
+		ageFilteredData := filterOldData(parsed, 48*time.Hour)
+
+		if len(ageFilteredData) < len(parsed) {
+			oldCount := len(parsed) - len(ageFilteredData)
+			logger.Info("Filtered old GPS records",
+				zap.Int("original_count", len(parsed)),
+				zap.Int("filtered_count", len(ageFilteredData)),
+				zap.Int("old_records", oldCount))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("old_data")
+			}
+		}
+
+		// Handle case where all records were filtered due to age
+		if len(ageFilteredData) == 0 {
+			logger.Debug("All records filtered (too old) - ACKing message",
+				zap.Int("original_count", len(parsed)))
+			return nil // ACK message without sending
+		}
+
+		// 4. Filter future data (tolerance: 5 minutes for clock drift)
+		timeFilteredData := filterFutureData(ageFilteredData, 5*time.Minute)
+
+		if len(timeFilteredData) < len(ageFilteredData) {
+			futureCount := len(ageFilteredData) - len(timeFilteredData)
+			logger.Info("Filtered future GPS records",
+				zap.Int("original_count", len(ageFilteredData)),
+				zap.Int("filtered_count", len(timeFilteredData)),
+				zap.Int("future_records", futureCount))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("future_data")
+			}
+		}
+
+		// Handle case where all records were filtered due to future timestamps
+		if len(timeFilteredData) == 0 {
+			logger.Debug("All records filtered (future timestamps) - ACKing message",
+				zap.Int("original_count", len(ageFilteredData)))
+			return nil // ACK message without sending
+		}
+
+		// 5. Filter redundant stoppage data
+		filteredData := stoppageFilter.FilterData(timeFilteredData)
 
 		// Handle case where all records were filtered
 		if len(filteredData) == 0 {
@@ -148,7 +275,7 @@ func main() {
 				zap.Int("removed_count", filteredCount))
 		}
 
-		// 4. Wrap filtered data in "data" field and re-encode as JSON for destination
+		// 6. Wrap filtered data in "data" field and re-encode as JSON for destination
 		wrappedData := map[string]interface{}{
 			"data": filteredData,
 		}
@@ -162,7 +289,7 @@ func main() {
 			return nil // Return nil to ACK and drop the message
 		}
 
-		// 5. Send filtered data to destination servers
+		// 7. Send filtered data to destination servers
 		result := httpSender.Send(ctx, jsonData)
 
 		if metrics.AppMetrics != nil {

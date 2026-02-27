@@ -24,7 +24,7 @@
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">سرعت</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">وضعیت</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">جهت</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">تاریخ (شمسی)</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">تاریخ</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">زمان</th>
                   </tr>
                 </thead>
