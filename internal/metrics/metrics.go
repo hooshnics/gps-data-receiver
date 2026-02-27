@@ -32,6 +32,12 @@ type Metrics struct {
 	// Failed Packets Metrics
 	FailedPacketsTotal prometheus.Counter
 
+	// Parser Metrics
+	ParseTotal         *prometheus.CounterVec
+	ParseDuration      prometheus.Histogram
+	RecordsParsedTotal prometheus.Counter
+	DataDroppedTotal   *prometheus.CounterVec
+
 	// Worker Metrics
 	WorkerPoolSize    prometheus.Gauge
 	WorkerActiveCount prometheus.Gauge
@@ -39,6 +45,10 @@ type Metrics struct {
 
 	// Rate Limiting Metrics
 	RateLimitHits *prometheus.CounterVec
+
+	// Filter Metrics
+	StoppageRecordsFilteredTotal prometheus.Counter
+	FilterStateCount             prometheus.Gauge
 
 	// System Metrics (Go runtime)
 	// These are automatically collected by Prometheus Go client
@@ -160,6 +170,35 @@ func InitMetrics() *Metrics {
 			},
 		),
 
+		// Parser Metrics
+		ParseTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gps_data_parse_total",
+				Help: "Total number of parse attempts",
+			},
+			[]string{"status"}, // success or failure
+		),
+		ParseDuration: promauto.NewHistogram(
+			prometheus.HistogramOpts{
+				Name:    "gps_data_parse_duration_seconds",
+				Help:    "Duration of GPS data parsing operations",
+				Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1},
+			},
+		),
+		RecordsParsedTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gps_records_parsed_total",
+				Help: "Total number of individual GPS records successfully parsed",
+			},
+		),
+		DataDroppedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gps_data_dropped_total",
+				Help: "Total number of messages dropped due to parse/validation errors",
+			},
+			[]string{"reason"}, // parse_error, empty_result, marshal_error
+		),
+
 		// Worker Metrics
 		WorkerPoolSize: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -187,6 +226,20 @@ func InitMetrics() *Metrics {
 				Help: "Total number of rate limit hits",
 			},
 			[]string{"client_ip"},
+		),
+
+		// Filter Metrics
+		StoppageRecordsFilteredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gps_receiver_stoppage_records_filtered_total",
+				Help: "Total number of redundant stoppage records filtered",
+			},
+		),
+		FilterStateCount: promauto.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "gps_receiver_filter_state_count",
+				Help: "Number of IMEIs being tracked by stoppage filter",
+			},
 		),
 	}
 
@@ -264,4 +317,31 @@ func (m *Metrics) IncActiveWorker() {
 func (m *Metrics) DecActiveWorker() {
 	m.WorkerActiveCount.Dec()
 	m.WorkerIdleCount.Inc()
+}
+
+// RecordParseSuccess records a successful parse operation
+func (m *Metrics) RecordParseSuccess(duration time.Duration, recordCount int) {
+	m.ParseTotal.WithLabelValues("success").Inc()
+	m.ParseDuration.Observe(duration.Seconds())
+	m.RecordsParsedTotal.Add(float64(recordCount))
+}
+
+// RecordParseFailure records a failed parse operation
+func (m *Metrics) RecordParseFailure() {
+	m.ParseTotal.WithLabelValues("failure").Inc()
+}
+
+// RecordDataDropped records a dropped message
+func (m *Metrics) RecordDataDropped(reason string) {
+	m.DataDroppedTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordStoppageFiltered records filtered stoppage records
+func (m *Metrics) RecordStoppageFiltered(count int) {
+	m.StoppageRecordsFilteredTotal.Add(float64(count))
+}
+
+// UpdateFilterStateCount updates the filter state count metric
+func (m *Metrics) UpdateFilterStateCount(count int) {
+	m.FilterStateCount.Set(float64(count))
 }

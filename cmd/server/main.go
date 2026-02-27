@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,8 +15,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
+	"github.com/gps-data-receiver/internal/filter"
 	"github.com/gps-data-receiver/internal/metrics"
+	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
+	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/gps-data-receiver/internal/sender"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
@@ -23,6 +27,91 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
+
+// filterOldData filters out GPS records older than the specified max age
+func filterOldData(data []parser.ParsedGPSData, maxAge time.Duration) []parser.ParsedGPSData {
+	if len(data) == 0 {
+		return data
+	}
+
+	now := time.Now()
+	filtered := make([]parser.ParsedGPSData, 0, len(data))
+
+	for _, record := range data {
+		// Parse the record's datetime (format: "2006-01-02 15:04:05")
+		// ParseInLocation parses in local timezone instead of UTC
+		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
+		if err != nil {
+			// If we can't parse the time, include the record (fail-open)
+			logger.Warn("Failed to parse record datetime, including record",
+				zap.String("datetime", record.DateTime),
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			filtered = append(filtered, record)
+			continue
+		}
+
+		// Calculate age
+		age := now.Sub(recordTime)
+
+		if age <= maxAge {
+			// Record is recent enough, include it
+			filtered = append(filtered, record)
+		} else {
+			// Record is too old, filter it out
+			logger.Debug("Filtered old GPS record",
+				zap.String("imei", record.IMEI),
+				zap.String("datetime", record.DateTime),
+				zap.Duration("age", age),
+				zap.Duration("max_age", maxAge))
+		}
+	}
+
+	return filtered
+}
+
+// filterFutureData filters out GPS records with timestamps in the future (beyond tolerance)
+func filterFutureData(data []parser.ParsedGPSData, tolerance time.Duration) []parser.ParsedGPSData {
+	if len(data) == 0 {
+		return data
+	}
+
+	now := time.Now()
+	filtered := make([]parser.ParsedGPSData, 0, len(data))
+
+	for _, record := range data {
+		// Parse the record's datetime (format: "2006-01-02 15:04:05")
+		// ParseInLocation parses in local timezone instead of UTC
+		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
+		if err != nil {
+			// If we can't parse the time, include the record (fail-open)
+			logger.Warn("Failed to parse record datetime, including record",
+				zap.String("datetime", record.DateTime),
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			filtered = append(filtered, record)
+			continue
+		}
+
+		// Calculate how far in the future this record is
+		futureOffset := recordTime.Sub(now)
+
+		// Allow past data (negative offset) and future data within tolerance
+		if futureOffset <= 0 || futureOffset <= tolerance {
+			// Record is in the past or within acceptable future range
+			filtered = append(filtered, record)
+		} else {
+			// Record is too far in the future, filter it out
+			logger.Debug("Filtered future GPS record",
+				zap.String("imei", record.IMEI),
+				zap.String("datetime", record.DateTime),
+				zap.Duration("future_offset", futureOffset),
+				zap.Duration("tolerance", tolerance))
+		}
+	}
+
+	return filtered
+}
 
 func main() {
 	// Load configuration
@@ -62,6 +151,19 @@ func main() {
 	httpSender := sender.NewHTTPSender(cfg)
 	defer httpSender.Close()
 
+	// Initialize stoppage filter
+	stoppageFilter := filter.NewStoppageFilter(
+		redisQueue.GetClient(),
+		cfg.Filter.Enabled,
+		cfg.Filter.RedisSyncInterval,
+	)
+	stoppageFilter.Start()
+	defer stoppageFilter.Close()
+
+	logger.Info("Stoppage filter initialized",
+		zap.Bool("enabled", cfg.Filter.Enabled),
+		zap.Duration("sync_interval", cfg.Filter.RedisSyncInterval))
+
 	// Socket.IO for real-time broadcast (received + delivered). Created early so messageHandler can emit delivered events.
 	io := socketio.New()
 
@@ -69,7 +171,126 @@ func main() {
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
 
-		result := httpSender.Send(ctx, data)
+		// 1. Sanitize UTF-8 encoding
+		sanitized := sanitizer.SanitizeUTF8(data)
+
+		// 2. Parse GPS data
+		parseStart := time.Now()
+		parsed, err := parser.Parse(sanitized)
+		parseDuration := time.Since(parseStart)
+
+		if err != nil {
+			logger.Error("Failed to parse GPS data - dropping message",
+				zap.Error(err),
+				zap.String("raw_data", string(data)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordParseFailure()
+				metrics.AppMetrics.RecordDataDropped("parse_error")
+			}
+			return nil // Return nil to ACK and drop the message (no retry)
+		}
+
+		// Handle empty parse results
+		if len(parsed) == 0 {
+			logger.Warn("No valid GPS records found - dropping message",
+				zap.String("raw_data", string(data)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordParseFailure()
+				metrics.AppMetrics.RecordDataDropped("empty_result")
+			}
+			return nil // Return nil to ACK and drop the message
+		}
+
+		// Record successful parse
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.RecordParseSuccess(parseDuration, len(parsed))
+		}
+
+		logger.Debug("GPS data parsed successfully",
+			zap.Int("record_count", len(parsed)),
+			zap.Duration("parse_duration", parseDuration))
+
+		// 3. Filter old data (older than 2 days)
+		ageFilteredData := filterOldData(parsed, 48*time.Hour)
+
+		if len(ageFilteredData) < len(parsed) {
+			oldCount := len(parsed) - len(ageFilteredData)
+			logger.Info("Filtered old GPS records",
+				zap.Int("original_count", len(parsed)),
+				zap.Int("filtered_count", len(ageFilteredData)),
+				zap.Int("old_records", oldCount))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("old_data")
+			}
+		}
+
+		// Handle case where all records were filtered due to age
+		if len(ageFilteredData) == 0 {
+			logger.Debug("All records filtered (too old) - ACKing message",
+				zap.Int("original_count", len(parsed)))
+			return nil // ACK message without sending
+		}
+
+		// 4. Filter future data (tolerance: 5 minutes for clock drift)
+		timeFilteredData := filterFutureData(ageFilteredData, 5*time.Minute)
+
+		if len(timeFilteredData) < len(ageFilteredData) {
+			futureCount := len(ageFilteredData) - len(timeFilteredData)
+			logger.Info("Filtered future GPS records",
+				zap.Int("original_count", len(ageFilteredData)),
+				zap.Int("filtered_count", len(timeFilteredData)),
+				zap.Int("future_records", futureCount))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("future_data")
+			}
+		}
+
+		// Handle case where all records were filtered due to future timestamps
+		if len(timeFilteredData) == 0 {
+			logger.Debug("All records filtered (future timestamps) - ACKing message",
+				zap.Int("original_count", len(ageFilteredData)))
+			return nil // ACK message without sending
+		}
+
+		// 5. Filter redundant stoppage data
+		filteredData := stoppageFilter.FilterData(timeFilteredData)
+
+		// Handle case where all records were filtered
+		if len(filteredData) == 0 {
+			logger.Debug("All records filtered (redundant stoppages) - ACKing message",
+				zap.Int("original_count", len(parsed)))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordStoppageFiltered(len(parsed))
+			}
+			return nil // ACK message without sending
+		}
+
+		// Record filtering metrics
+		if len(filteredData) < len(parsed) && metrics.AppMetrics != nil {
+			filteredCount := len(parsed) - len(filteredData)
+			metrics.AppMetrics.RecordStoppageFiltered(filteredCount)
+			logger.Info("Filtered redundant stoppage records",
+				zap.Int("original_count", len(parsed)),
+				zap.Int("filtered_count", len(filteredData)),
+				zap.Int("removed_count", filteredCount))
+		}
+
+		// 6. Wrap filtered data in "data" field and re-encode as JSON for destination
+		wrappedData := map[string]interface{}{
+			"data": filteredData,
+		}
+		jsonData, err := json.Marshal(wrappedData)
+		if err != nil {
+			logger.Error("Failed to marshal parsed data - dropping message",
+				zap.Error(err))
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordDataDropped("marshal_error")
+			}
+			return nil // Return nil to ACK and drop the message
+		}
+
+		// 7. Send filtered data to destination servers
+		result := httpSender.Send(ctx, jsonData)
 
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordQueueProcessing(time.Since(start))
@@ -87,8 +308,9 @@ func main() {
 		payload := map[string]interface{}{
 			"delivered_at":  time.Now().UTC().Format(time.RFC3339),
 			"target_server": result.TargetServer,
-			"payload":       string(data),
-			"payload_size":  len(data),
+			"payload":       string(jsonData),
+			"payload_size":  len(jsonData),
+			"record_count":  len(parsed),
 		}
 		if err := io.Emit("gps-delivered", payload); err != nil {
 			logger.Debug("Broadcast gps-delivered failed", zap.Error(err))
@@ -227,6 +449,10 @@ func main() {
 				metrics.AppMetrics.SetWorkerPoolSize(cfg.Worker.Count)
 
 				activeWorkers := consumer.GetActiveWorkerCount()
+
+				// Update filter state count metric
+				filterStateCount := stoppageFilter.GetStateCount()
+				metrics.AppMetrics.UpdateFilterStateCount(filterStateCount)
 
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				queueLen, err := redisQueue.GetClient().XLen(ctx, redisQueue.GetStreamName()).Result()
