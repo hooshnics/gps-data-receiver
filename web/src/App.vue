@@ -19,7 +19,6 @@
               <table class="min-w-full divide-y divide-slate-200 text-sm">
                 <thead class="bg-slate-50 sticky top-0 z-10">
                   <tr>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">#</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">IMEI</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">مختصات</th>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">سرعت</th>
@@ -31,9 +30,6 @@
                 </thead>
                 <tbody class="divide-y divide-slate-100 bg-white">
                   <tr v-for="(row, index) in deliveredRows" :key="row.key || index" class="hover:bg-slate-50/60">
-                    <td class="whitespace-nowrap px-4 py-2 text-center text-xs text-slate-500">
-                      {{ index + 1 }}
-                    </td>
                     <td class="whitespace-nowrap px-4 py-2 text-center font-mono text-xs text-slate-800">
                       {{ row.imei }}
                     </td>
