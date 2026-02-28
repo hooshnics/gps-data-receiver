@@ -137,7 +137,7 @@ func Load() (*Config, error) {
 			Format: getEnv("LOG_FORMAT", "json"),
 		},
 		Filter: FilterConfig{
-			Enabled:           getBool("FILTER_ENABLED", true),
+			Enabled:           getBool("FILTER_ENABLED", false),
 			RedisSyncInterval: getDuration("FILTER_REDIS_SYNC_INTERVAL", 30*time.Second),
 		},
 		Tracking: TrackingConfig{
