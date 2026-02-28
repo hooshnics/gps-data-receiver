@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -28,82 +27,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
-
-// parsedDataPool reduces GC pressure by pooling slice allocations for parsed GPS data
-var parsedDataPool = sync.Pool{
-	New: func() interface{} {
-		s := make([]parser.ParsedGPSData, 0, 64)
-		return &s
-	},
-}
-
-// getParsedDataSlice gets a slice from the pool
-func getParsedDataSlice() *[]parser.ParsedGPSData {
-	return parsedDataPool.Get().(*[]parser.ParsedGPSData)
-}
-
-// putParsedDataSlice returns a slice to the pool after resetting it
-func putParsedDataSlice(s *[]parser.ParsedGPSData) {
-	*s = (*s)[:0]
-	parsedDataPool.Put(s)
-}
-
-// TimeFilterResult holds the result of time-based filtering
-type TimeFilterResult struct {
-	Data        []parser.ParsedGPSData
-	OldCount    int
-	FutureCount int
-}
-
-// filterByTime filters GPS records by time constraints in a single pass.
-// It removes records older than maxAge and records with timestamps too far in the future.
-// The filtered slice is written to the provided destination to enable pooling.
-func filterByTime(data []parser.ParsedGPSData, maxAge, futureTolerance time.Duration, dest *[]parser.ParsedGPSData) TimeFilterResult {
-	result := TimeFilterResult{}
-
-	if len(data) == 0 {
-		result.Data = data
-		return result
-	}
-
-	now := time.Now()
-	cutoffOld := now.Add(-maxAge)
-	cutoffFuture := now.Add(futureTolerance)
-
-	for i := range data {
-		record := &data[i]
-
-		// Parse the record's datetime (format: "2006-01-02 15:04:05")
-		recordTime, err := time.ParseInLocation("2006-01-02 15:04:05", record.DateTime, time.Local)
-		if err != nil {
-			// If we can't parse the time, include the record (fail-open)
-			logger.Warn("Failed to parse record datetime, including record",
-				zap.String("datetime", record.DateTime),
-				zap.String("imei", record.IMEI),
-				zap.Error(err))
-			*dest = append(*dest, *record)
-			continue
-		}
-
-		// Check if record is too old
-		if recordTime.Before(cutoffOld) {
-			result.OldCount++
-			continue
-		}
-
-		// Check if record is too far in the future
-		if recordTime.After(cutoffFuture) {
-			result.FutureCount++
-			continue
-		}
-
-		// Record passed all time filters
-		*dest = append(*dest, *record)
-	}
-
-	result.Data = *dest
-	return result
-}
 
 func main() {
 	// Load configuration
@@ -215,8 +138,7 @@ func main() {
 			zap.Int("record_count", len(parsed)),
 			zap.Duration("parse_duration", parseDuration))
 
-		// 3. Time filtering DISABLED - passing all data through
-		// timeFilteredData := parsed
+		// 3. No time filtering - pass all parsed data to stoppage filter
 		timeFilteredData := parsed
 
 		// 4. Filter redundant stoppage data
