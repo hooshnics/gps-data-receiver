@@ -11,11 +11,11 @@
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
               داده‌های ارسال‌شده به سرورها
-              <span class="ml-2 font-normal text-slate-500">({{ deliveredRows.length }} رکورد)</span>
+              <span class="ml-2 font-normal text-slate-500">({{ displayedDeliveredRows.length }} از ۱۵ رکورد)</span>
             </h2>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
-            <div v-if="deliveredRows.length" class="overflow-x-auto">
+            <div v-if="displayedDeliveredRows.length" class="overflow-x-auto">
               <table class="min-w-full divide-y divide-slate-200 text-sm">
                 <thead class="bg-slate-50 sticky top-0 z-10">
                   <tr>
@@ -29,7 +29,7 @@
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100 bg-white">
-                  <tr v-for="(row, index) in deliveredRows" :key="row.key || index" class="hover:bg-slate-50/60">
+                  <tr v-for="(row, index) in displayedDeliveredRows" :key="row.key || index" class="hover:bg-slate-50/60">
                     <td class="whitespace-nowrap px-4 py-2 text-center font-mono text-xs text-slate-800">
                       {{ row.imei }}
                     </td>
@@ -65,12 +65,12 @@
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
               داده‌های دریافتی
-              <span class="ml-2 font-normal text-slate-500">({{ packets.length }} مورد)</span>
+              <span class="ml-2 font-normal text-slate-500">({{ displayedPackets.length }} از ۱۵ مورد)</span>
             </h2>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
-            <ul v-if="packets.length" class="divide-y divide-slate-200">
-              <li v-for="(pkt, index) in packets" :key="pkt.message_id + '-' + index"
+            <ul v-if="displayedPackets.length" class="divide-y divide-slate-200">
+              <li v-for="(pkt, index) in displayedPackets" :key="pkt.message_id + '-' + index"
                 class="px-4 py-3 sm:px-6 hover:bg-slate-50/50">
                 <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <span class="font-mono text-sm font-medium text-slate-700">
@@ -227,4 +227,10 @@ const deliveredRows = computed(() => {
   }
   return rows
 })
+
+/** Latest 15 records, newest at top (composable already keeps newest first). */
+const displayedDeliveredRows = computed(() => deliveredRows.value.slice(0, 15))
+
+/** Latest 15 packets, newest at top (composable already keeps newest first). */
+const displayedPackets = computed(() => packets.value.slice(0, 15))
 </script>
