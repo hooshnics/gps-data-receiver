@@ -215,44 +215,15 @@ func main() {
 			zap.Int("record_count", len(parsed)),
 			zap.Duration("parse_duration", parseDuration))
 
-		// 3. Filter by time (combines old data + future data filtering in single pass)
-		// Uses pooled slice to reduce allocations
-		timeFilteredSlice := getParsedDataSlice()
-		timeFilterResult := filterByTime(parsed, 48*time.Hour, 5*time.Minute, timeFilteredSlice)
-		timeFilteredData := timeFilterResult.Data
-
-		// Log and record metrics for filtered records
-		if timeFilterResult.OldCount > 0 {
-			logger.Info("Filtered old GPS records",
-				zap.Int("original_count", len(parsed)),
-				zap.Int("old_records", timeFilterResult.OldCount))
-			if metrics.AppMetrics != nil {
-				metrics.AppMetrics.RecordDataDropped("old_data")
-			}
-		}
-		if timeFilterResult.FutureCount > 0 {
-			logger.Info("Filtered future GPS records",
-				zap.Int("original_count", len(parsed)),
-				zap.Int("future_records", timeFilterResult.FutureCount))
-			if metrics.AppMetrics != nil {
-				metrics.AppMetrics.RecordDataDropped("future_data")
-			}
-		}
-
-		// Handle case where all records were filtered due to time constraints
-		if len(timeFilteredData) == 0 {
-			putParsedDataSlice(timeFilteredSlice)
-			logger.Debug("All records filtered (time constraints) - ACKing message",
-				zap.Int("original_count", len(parsed)))
-			return nil // ACK message without sending
-		}
+		// 3. Time filtering DISABLED - passing all data through
+		// timeFilteredData := parsed
+		timeFilteredData := parsed
 
 		// 4. Filter redundant stoppage data
 		filteredData := stoppageFilter.FilterData(timeFilteredData)
 
 		// Handle case where all records were filtered
 		if len(filteredData) == 0 {
-			putParsedDataSlice(timeFilteredSlice)
 			logger.Debug("All records filtered (redundant stoppages) - ACKing message",
 				zap.Int("original_count", len(parsed)))
 			if metrics.AppMetrics != nil {
@@ -278,7 +249,6 @@ func main() {
 		}
 		jsonData, err := gojson.Marshal(wrappedData)
 		if err != nil {
-			putParsedDataSlice(timeFilteredSlice)
 			logger.Error("Failed to marshal parsed data - dropping message",
 				zap.Error(err))
 			if metrics.AppMetrics != nil {
@@ -286,9 +256,6 @@ func main() {
 			}
 			return nil // Return nil to ACK and drop the message
 		}
-
-		// Return pooled slice now that we've serialized the data
-		putParsedDataSlice(timeFilteredSlice)
 
 		// 6. Send filtered data to destination servers
 		result := httpSender.Send(ctx, jsonData)
