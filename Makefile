@@ -165,7 +165,11 @@ test-prometheus: ## Test Prometheus connectivity
 	@curl -s http://localhost:8080/metrics | head -n 5 && echo "✓ Metrics endpoint accessible" || echo "✗ Metrics endpoint not accessible"
 	@echo "\n3. Testing from Prometheus container:"
 	@docker exec gps-prometheus wget -q -O- http://app:8080/metrics | head -n 5 && echo "✓ Prometheus can reach app" || echo "✗ Prometheus cannot reach app"
-	@echo "\n4. Checking Prometheus targets:"
+	@echo "\n4. Testing node-exporter from Prometheus container:"
+	@docker exec gps-prometheus wget -q -O- http://node-exporter:9100/metrics | head -n 3 && echo "✓ Prometheus can reach node-exporter" || echo "✗ Prometheus cannot reach node-exporter"
+	@echo "\n5. Testing cAdvisor from Prometheus container:"
+	@docker exec gps-prometheus wget -q -O- http://cadvisor:8080/metrics | head -n 3 && echo "✓ Prometheus can reach cAdvisor" || echo "✗ Prometheus cannot reach cAdvisor"
+	@echo "\n6. Checking Prometheus targets:"
 	@echo "Visit: http://localhost:9090/targets"
 
 test-grafana: ## Test Grafana and Prometheus datasource
