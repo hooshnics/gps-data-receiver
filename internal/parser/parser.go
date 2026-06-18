@@ -22,6 +22,7 @@ type ParsedGPSData struct {
 	Directions DirectionData `json:"directions"`
 	DateTime   string        `json:"date_time"` // MySQL datetime format: YYYY-MM-DD HH:MM:SS
 	IMEI       string        `json:"imei"`
+	RawData    string        `json:"-"` // Original device payload; not forwarded to destination servers
 }
 
 // DirectionData represents direction indicators
@@ -159,6 +160,7 @@ func processDataItem(data string) (*ParsedGPSData, error) {
 		},
 		DateTime: dateTime,
 		IMEI:     fields[11],
+		RawData:  data,
 	}, nil
 }
 

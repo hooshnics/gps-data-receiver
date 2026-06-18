@@ -21,6 +21,7 @@ type Config struct {
 	Logging   LoggingConfig
 	Filter    FilterConfig
 	Tracking  TrackingConfig
+	RawLog    RawLogConfig
 }
 
 // ServerConfig holds server configuration
@@ -90,6 +91,13 @@ type TrackingConfig struct {
 	MaxRequests int     // Maximum requests to keep in memory
 }
 
+// RawLogConfig holds raw device payload file logging configuration
+type RawLogConfig struct {
+	Enabled    bool
+	BaseDir    string
+	BufferSize int
+}
+
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if not found)
@@ -144,6 +152,11 @@ func Load() (*Config, error) {
 			Enabled:     getBool("TRACKING_ENABLED", true),
 			SampleRate:  getFloat64("TRACKING_SAMPLE_RATE", 0.01), // 1% sampling by default
 			MaxRequests: getInt("TRACKING_MAX_REQUESTS", 10000),
+		},
+		RawLog: RawLogConfig{
+			Enabled:    getBool("RAW_LOG_ENABLED", true),
+			BaseDir:    getEnv("RAW_LOG_DIR", "logs/raw"),
+			BufferSize: getInt("RAW_LOG_BUFFER_SIZE", 10000),
 		},
 	}
 
