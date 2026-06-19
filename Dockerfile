@@ -1,73 +1,68 @@
-# syntax=docker/dockerfile:1.4
-# Multi-stage build for optimal image size and fast builds
+# syntax=docker/dockerfile:1.7
+# Multi-stage build: separate build toolchains from minimal runtime image.
 
-# Stage 1: Build
+# Stage 1: Go backend
 FROM golang:1.24-alpine AS builder
 
-# Use goproxy.io first; if you get 403 from proxy.golang.org, override with:
-#   docker build --build-arg GOPROXY=direct ...
 ARG GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
-# Install build dependencies in a single layer
-RUN apk add --no-cache git gcc musl-dev
+RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
-
-# Download dependencies with BuildKit cache mount (much faster on rebuilds)
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download
 
-# Copy source code (this layer will invalidate only when source changes)
-COPY . .
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
 
-# Build with cache mounts and optimizations
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -trimpath \
-    -o /app/gps-receiver \
+    -o /out/gps-receiver \
     ./cmd/server
 
-# Stage 2: Build frontend (Vue app for production main domain)
+# Stage 2: Vue frontend (static assets only in final image)
 FROM node:20-alpine AS frontend
+
 WORKDIR /app/web
+
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --ignore-scripts
+
 COPY web/ ./
 RUN npm run build
 
-# Stage 3: Runtime (minimal image)
-FROM alpine:latest
+# Stage 3: Runtime
+FROM alpine:3.21 AS runtime
 
-# Install runtime dependencies (incl. Node.js/npm for tooling or frontend builds) and create user in a single layer
-RUN apk --no-cache add ca-certificates tzdata wget nodejs npm && \
+LABEL org.opencontainers.image.title="gps-data-receiver" \
+      org.opencontainers.image.description="GPS data receiver and forwarding service"
+
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    wget && \
     addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
+    adduser -D -G appuser -u 1000 appuser
 
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /app/gps-receiver .
-
-# Copy built frontend so main domain (GET /) serves the Vue app
-COPY --from=frontend /app/web/dist ./web/dist
-
-# Set ownership and switch user in one step
-RUN chown -R appuser:appuser /app
+COPY --from=builder --chown=appuser:appuser /out/gps-receiver ./gps-receiver
+COPY --from=frontend --chown=appuser:appuser /app/web/dist ./web/dist
 
 USER appuser
 
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
 CMD ["./gps-receiver"]
-

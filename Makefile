@@ -7,6 +7,9 @@
 BINARY_NAME=gps-receiver
 BINARY_PATH=./$(BINARY_NAME)
 
+# Docker Compose (V2 plugin)
+DOCKER_COMPOSE=docker compose
+
 # Go parameters
 GOCMD=go
 GOBUILD=$(GOCMD) build
@@ -62,7 +65,7 @@ test-unit: ## Run unit tests
 
 test-integration: ## Run integration tests (requires Redis)
 	@echo "Running integration tests..."
-	@echo "Note: Redis must be running (docker-compose up -d redis)"
+	@echo "Note: Redis must be running (docker compose up -d redis)"
 	$(GOTEST) -v ./tests/integration/...
 	@echo "Integration tests complete"
 
@@ -118,35 +121,35 @@ docker-build: ## Build Docker image with BuildKit (faster)
 	DOCKER_BUILDKIT=1 docker build -t gps-receiver:latest .
 	@echo "Docker image built: gps-receiver:latest"
 
-docker-up: ## Start all services with docker-compose (uses BuildKit). If go mod download fails with 403, try: GOPROXY=direct make docker-up
+docker-up: ## Start all services with Docker Compose (uses BuildKit). If go mod download fails with 403, try: GOPROXY=direct make docker-up
 	@echo "Starting services with BuildKit..."
-	DOCKER_BUILDKIT=1 docker-compose up -d --build
+	DOCKER_BUILDKIT=1 $(DOCKER_COMPOSE) up -d --build
 	@echo "Services started. Use 'make docker-logs' to view logs"
 	@echo "Health check: curl http://localhost:8080/health"
 
-docker-watch: ## Start services with Compose Watch: app rebuilds when Go source or go.mod/go.sum change. Run in foreground.
-	DOCKER_BUILDKIT=1 docker compose watch
+docker-watch: ## Start services with Compose Watch: app rebuilds when Go source, web, or go.mod/go.sum change. Run in foreground.
+	DOCKER_BUILDKIT=1 $(DOCKER_COMPOSE) watch
 
 docker-down: ## Stop all services
 	@echo "Stopping services..."
-	docker-compose down
+	$(DOCKER_COMPOSE) down
 	@echo "Services stopped"
 
 docker-down-volumes: ## Stop all services and remove volumes
 	@echo "Stopping services and removing volumes..."
-	docker-compose down -v
+	$(DOCKER_COMPOSE) down -v
 	@echo "Services stopped and volumes removed"
 
-docker-logs: ## View docker-compose logs
-	docker-compose logs -f
+docker-logs: ## View Docker Compose logs
+	$(DOCKER_COMPOSE) logs -f
 
 docker-restart: ## Restart all services
 	@echo "Restarting services..."
-	docker-compose restart
+	$(DOCKER_COMPOSE) restart
 	@echo "Services restarted"
 
 docker-ps: ## Show running containers
-	docker-compose ps
+	$(DOCKER_COMPOSE) ps
 
 grafana-reset-password: ## Reset Grafana admin password (use: make grafana-reset-password NEW_PASSWORD=yournewpassword)
 	@if [ -z "$(NEW_PASSWORD)" ]; then \
@@ -154,7 +157,7 @@ grafana-reset-password: ## Reset Grafana admin password (use: make grafana-reset
 		exit 1; \
 	fi
 	@echo "Resetting Grafana admin password..."
-	docker-compose exec grafana grafana-cli admin reset-admin-password "$(NEW_PASSWORD)"
+	$(DOCKER_COMPOSE) exec grafana grafana-cli admin reset-admin-password "$(NEW_PASSWORD)"
 	@echo "Password reset. Log in at http://localhost:3000 with admin / your new password."
 
 test-prometheus: ## Test Prometheus connectivity
@@ -199,13 +202,13 @@ load-test: ## Run load test (requires hey, vegeta, or ab)
 
 flush-queue: ## Flush the entire Redis queue
 	@echo "Flushing Redis queue..."
-	@if docker-compose ps -q redis >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q redis)" ]; then \
-		docker-compose exec -T redis redis-cli -n $(REDIS_DB) FLUSHDB; \
+	@if $(DOCKER_COMPOSE) ps -q redis >/dev/null 2>&1 && [ -n "$$($(DOCKER_COMPOSE) ps -q redis)" ]; then \
+		$(DOCKER_COMPOSE) exec -T redis redis-cli -n $(REDIS_DB) FLUSHDB; \
 	elif command -v redis-cli >/dev/null 2>&1; then \
 		redis-cli -h $(REDIS_HOST) -p $(REDIS_PORT) -n $(REDIS_DB) FLUSHDB; \
 	else \
 		echo "Error: redis-cli not found and redis container not running."; \
-		echo "Start Redis with docker-compose or install redis-cli."; \
+		echo "Start Redis with 'docker compose up -d redis' or install redis-cli."; \
 		exit 1; \
 	fi
 	@echo "Redis queue flushed successfully."
@@ -213,13 +216,13 @@ flush-queue: ## Flush the entire Redis queue
 flush-database: ## Flush the entire MySQL database
 	@echo "WARNING: This will drop and recreate the $(MYSQL_DATABASE) database!"
 	@echo "Flushing MySQL database..."
-	@if docker-compose ps -q mysql >/dev/null 2>&1 && [ -n "$$(docker-compose ps -q mysql)" ]; then \
-		docker-compose exec -T mysql mysql -u root -prootpass -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
+	@if $(DOCKER_COMPOSE) ps -q mysql >/dev/null 2>&1 && [ -n "$$($(DOCKER_COMPOSE) ps -q mysql)" ]; then \
+		$(DOCKER_COMPOSE) exec -T mysql mysql -u root -prootpass -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
 	elif command -v mysql >/dev/null 2>&1; then \
 		mysql -h $(MYSQL_HOST) -P $(MYSQL_PORT) -u root -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
 	else \
 		echo "Error: mysql client not found and mysql container not running."; \
-		echo "Start MySQL with docker-compose or install mysql client."; \
+		echo "Start MySQL with 'docker compose up -d mysql' or install mysql client."; \
 		exit 1; \
 	fi
 	@echo "MySQL database flushed successfully."

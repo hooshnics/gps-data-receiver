@@ -29,15 +29,22 @@ gps-receiver
 *.so
 *.dylib
 
-# Dependencies (will be downloaded during build)
+# Dependencies (downloaded during image build)
 vendor/
 
-# Docker
+# Frontend (built in dedicated stage; keep local installs out of context)
+web/node_modules/
+web/dist/
+
+# Runtime logs
+logs/
+
+# Docker (not needed in build context)
 docker-compose.yml
 Dockerfile
 .dockerignore
 
-# Monitoring configs (not needed in build)
+# Monitoring configs (not needed in app image build)
 prometheus.yml
 grafana/
 
@@ -45,7 +52,8 @@ grafana/
 .github/
 .gitlab-ci.yml
 
-# Misc
+# Scripts and misc
+scripts/
 tmp/
 temp/
 *.log
@@ -54,4 +62,3 @@ temp/
 *.tar.gz
 .DS_Store
 Thumbs.db
-
