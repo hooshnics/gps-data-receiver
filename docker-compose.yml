@@ -1,5 +1,13 @@
 name: gps-data-receiver
 
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+  cache_from:
+    - gps-receiver:latest
+  args:
+    GOPROXY: ${GOPROXY:-https://goproxy.io,https://proxy.golang.org,direct}
+
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s
   timeout: 5s
@@ -28,10 +36,8 @@ services:
 
   app:
     build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        GOPROXY: ${GOPROXY:-https://goproxy.io,https://proxy.golang.org,direct}
+      <<: *app-build
+    image: gps-receiver:latest
     develop:
       watch:
         - action: rebuild

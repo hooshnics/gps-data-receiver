@@ -116,10 +116,14 @@ deps: ## Download Go dependencies
 	$(GOMOD) download
 	@echo "Dependencies downloaded"
 
+DOCKER_IMAGE ?= gps-receiver:latest
+DOCKER_CACHE_FROM := $(shell docker image inspect $(DOCKER_IMAGE) >/dev/null 2>&1 && echo --cache-from $(DOCKER_IMAGE))
+DOCKER_BUILD_FLAGS ?= $(DOCKER_CACHE_FROM) --build-arg BUILDKIT_INLINE_CACHE=1
+
 docker-build: ## Build Docker image with BuildKit (faster)
 	@echo "Building Docker image with BuildKit..."
-	DOCKER_BUILDKIT=1 docker build -t gps-receiver:latest .
-	@echo "Docker image built: gps-receiver:latest"
+	DOCKER_BUILDKIT=1 docker build $(DOCKER_BUILD_FLAGS) -t $(DOCKER_IMAGE) .
+	@echo "Docker image built: $(DOCKER_IMAGE)"
 
 docker-up: ## Start all services with Docker Compose (uses BuildKit). If go mod download fails with 403, try: GOPROXY=direct make docker-up
 	@echo "Starting services with BuildKit..."
