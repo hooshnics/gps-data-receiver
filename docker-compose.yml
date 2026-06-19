@@ -6,7 +6,9 @@ x-app-build: &app-build
   cache_from:
     - gps-receiver:latest
   args:
-    GOPROXY: ${GOPROXY:-https://goproxy.io,https://proxy.golang.org,direct}
+    DOCKER_REGISTRY_MIRROR: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}
+    GOPROXY: ${GOPROXY:-https://mirror.kargadan.ir/repository/go-group/,direct}
+    GOSUMDB: ${GOSUMDB:-off}
 
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s
@@ -16,7 +18,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 
 services:
   redis:
-    image: redis:7.4-alpine
+    image: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}/redis:7.4-alpine
     container_name: gps-redis
     pull_policy: if_not_present
     ports:
@@ -99,7 +101,7 @@ services:
       <<: *healthcheck-defaults
 
   node-exporter:
-    image: prom/node-exporter:v1.9.1
+    image: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}/prom/node-exporter:v1.9.1
     container_name: gps-node-exporter
     pull_policy: if_not_present
     ports:
@@ -126,7 +128,7 @@ services:
       retries: 3
 
   cadvisor:
-    image: ghcr.io/google/cadvisor:0.55.1
+    image: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}/google/cadvisor:0.55.1
     container_name: gps-cadvisor
     pull_policy: if_not_present
     ports:
@@ -150,7 +152,7 @@ services:
       retries: 3
 
   prometheus:
-    image: prom/prometheus:v3.4.2
+    image: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}/prom/prometheus:v3.4.2
     container_name: gps-prometheus
     pull_policy: if_not_present
     ports:
@@ -181,7 +183,7 @@ services:
       <<: *healthcheck-defaults
 
   grafana:
-    image: grafana/grafana:11.6.1
+    image: ${DOCKER_REGISTRY_MIRROR:-docker.arvancloud.ir}/grafana/grafana:11.6.1
     container_name: gps-grafana
     pull_policy: if_not_present
     ports:
