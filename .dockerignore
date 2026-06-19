@@ -6,13 +6,17 @@
 *.md
 README.md
 
-# Tests
+# Tests (not compiled into the binary)
 tests/
 *_test.go
+coverage.txt
+coverage.html
+*.out
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
@@ -24,27 +28,30 @@ env.example
 
 # Build artifacts
 gps-receiver
+server
 *.exe
 *.dll
 *.so
 *.dylib
+*.test
+dist/
+build/
 
-# Dependencies (downloaded during image build)
+# Dependencies (resolved during image build)
 vendor/
-
-# Frontend (built in dedicated stage; keep local installs out of context)
 web/node_modules/
 web/dist/
 
 # Runtime logs
 logs/
+*.log
 
 # Docker (not needed in build context)
 docker-compose.yml
 Dockerfile
 .dockerignore
 
-# Monitoring configs (not needed in app image build)
+# Monitoring / ops (not needed in app image)
 prometheus.yml
 grafana/
 
@@ -54,9 +61,9 @@ grafana/
 
 # Scripts and misc
 scripts/
+Makefile
 tmp/
 temp/
-*.log
 *.zip
 *.tar
 *.tar.gz

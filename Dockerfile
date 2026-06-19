@@ -1,28 +1,30 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build: separate build toolchains from minimal runtime image.
+# Multi-stage build: Go backend and Vue frontend build in parallel; minimal runtime image.
 
 # Stage 1: Go backend
 FROM golang:1.24-alpine AS builder
 
 ARG GOPROXY=https://goproxy.io,https://proxy.golang.org,direct
-ENV GOPROXY=${GOPROXY}
-
-RUN apk add --no-cache git
+ENV GOPROXY=${GOPROXY} \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
+COPY --link go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download
 
-COPY cmd/ ./cmd/
-COPY internal/ ./internal/
-COPY pkg/ ./pkg/
+COPY --link cmd/ ./cmd/
+COPY --link internal/ ./internal/
+COPY --link pkg/ ./pkg/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    go build \
+    -buildvcs=false \
     -ldflags="-w -s" \
     -trimpath \
     -o /out/gps-receiver \
@@ -33,12 +35,20 @@ FROM node:20-alpine AS frontend
 
 WORKDIR /app/web
 
-COPY web/package.json web/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts
+ENV CI=true
 
-COPY web/ ./
-RUN npm run build
+COPY --link web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/app/web/node_modules \
+    npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
+
+COPY --link web/src ./src
+COPY --link web/public ./public
+COPY --link web/index.html web/vite.config.js web/tailwind.config.js web/postcss.config.js ./
+
+RUN --mount=type=cache,target=/app/web/node_modules \
+    --mount=type=cache,target=/app/web/node_modules/.vite \
+    npm run build
 
 # Stage 3: Runtime
 FROM alpine:3.21 AS runtime
