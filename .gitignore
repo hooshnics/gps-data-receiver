@@ -48,11 +48,12 @@ temp/
 *.sqlite
 
 # Build artifacts
-dist/
+/dist/
 build/
 
 # Frontend (Vue)
 web/node_modules/
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 
 .cursor/

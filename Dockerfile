@@ -4,14 +4,18 @@
 # Stage 1: Go backend
 FROM golang:1.24-alpine AS builder
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 ENV CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64
+    GOOS=${TARGETOS} \
+    GOARCH=${TARGETARCH}
 
 WORKDIR /app
 
 COPY --link go.mod go.sum ./
 COPY --link vendor/ ./vendor/
+
+RUN test -f vendor/modules.txt || (echo "ERROR: vendor/ is missing. Run 'make vendor' and commit vendor/ before building." && exit 1)
 
 COPY --link cmd/ ./cmd/
 COPY --link internal/ ./internal/
@@ -26,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o /out/gps-receiver \
     ./cmd/server
 
-# Stage 2: Vue frontend (static assets only in final image)
+# Stage 2: Vue frontend (uses pre-built web/dist when present; otherwise builds with npm)
 FROM node:20-alpine AS frontend
 
 WORKDIR /app/web
@@ -34,17 +38,19 @@ WORKDIR /app/web
 ENV CI=true
 
 COPY --link web/package.json web/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    --mount=type=cache,target=/app/web/node_modules \
-    npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
-
 COPY --link web/src ./src
 COPY --link web/public ./public
 COPY --link web/index.html web/vite.config.js web/tailwind.config.js web/postcss.config.js ./
+COPY --link web/dist ./dist
 
-RUN --mount=type=cache,target=/app/web/node_modules \
-    --mount=type=cache,target=/app/web/node_modules/.vite \
-    npm run build
+RUN --mount=type=cache,target=/root/.npm \
+    --mount=type=cache,target=/app/web/node_modules \
+    if [ ! -f dist/index.html ]; then \
+      npm ci --ignore-scripts --no-audit --no-fund && \
+      npm run build; \
+    else \
+      echo "Using pre-built web/dist from build context"; \
+    fi
 
 # Stage 3: Runtime
 FROM alpine:3.21 AS runtime

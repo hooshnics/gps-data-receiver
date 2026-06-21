@@ -3,8 +3,6 @@ name: gps-data-receiver
 x-app-build: &app-build
   context: .
   dockerfile: Dockerfile
-  cache_from:
-    - gps-receiver:latest
 
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s
