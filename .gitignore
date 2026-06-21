@@ -1,6 +1,6 @@
 # Binaries
 gps-receiver
-server
+/server
 *.exe
 *.dll
 *.so
