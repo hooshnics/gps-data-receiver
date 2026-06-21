@@ -92,7 +92,10 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
-      <<: *healthcheck-defaults
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   node-exporter:
     image: prom/node-exporter:v1.9.1

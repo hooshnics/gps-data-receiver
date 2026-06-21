@@ -278,7 +278,9 @@ func main() {
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	router.GET("/health", handler.Health)
+	router.HEAD("/health", handler.Health)
 	router.GET("/ready", handler.Ready)
+	router.HEAD("/ready", handler.Ready)
 
 	// Prometheus metrics endpoint
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))

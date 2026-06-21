@@ -203,16 +203,24 @@ func readBody(c *gin.Context) ([]byte, error) {
 	return body, nil
 }
 
-// Health handles GET /health
+// Health handles GET and HEAD /health
 func (h *Handler) Health(c *gin.Context) {
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "healthy",
 		"service": "gps-data-receiver",
 	})
 }
 
-// Ready handles GET /ready
+// Ready handles GET and HEAD /ready
 func (h *Handler) Ready(c *gin.Context) {
+	if c.Request.Method == http.MethodHead {
+		c.Status(http.StatusOK)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ready",
 	})
