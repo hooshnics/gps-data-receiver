@@ -14,8 +14,7 @@ server
 coverage.txt
 coverage.html
 
-# Dependency directories
-vendor/
+# Dependency directories (vendor/ is committed for reproducible Docker builds)
 
 # Go workspace file
 go.work

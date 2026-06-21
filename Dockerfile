@@ -4,28 +4,22 @@
 # Stage 1: Go backend
 FROM golang:1.24-alpine AS builder
 
-ARG GOPROXY=https://proxy.golang.org,direct
-ARG GOSUMDB=sum.golang.org
-ENV GOPROXY=${GOPROXY} \
-    GOSUMDB=${GOSUMDB} \
-    CGO_ENABLED=0 \
+ENV CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64
 
 WORKDIR /app
 
 COPY --link go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
+COPY --link vendor/ ./vendor/
 
 COPY --link cmd/ ./cmd/
 COPY --link internal/ ./internal/
 COPY --link pkg/ ./pkg/
 
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/root/.cache/go-build \
     go build \
+    -mod=vendor \
     -buildvcs=false \
     -ldflags="-w -s" \
     -trimpath \
