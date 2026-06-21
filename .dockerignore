@@ -41,7 +41,7 @@ build/
 web/node_modules/
 
 # Runtime logs
-logs/
+/logs/
 *.log
 
 # Docker (not needed in build context)
