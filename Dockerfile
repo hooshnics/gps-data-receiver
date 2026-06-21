@@ -1,13 +1,11 @@
-# syntax=docker.arvancloud.ir/docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7
 # Multi-stage build: Go backend and Vue frontend build in parallel; minimal runtime image.
 
-ARG DOCKER_REGISTRY_MIRROR=docker.arvancloud.ir
-
 # Stage 1: Go backend
-FROM ${DOCKER_REGISTRY_MIRROR}/golang:1.24-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
-ARG GOPROXY=https://mirror.kargadan.ir/repository/go-group/,direct
-ARG GOSUMDB=off
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
 ENV GOPROXY=${GOPROXY} \
     GOSUMDB=${GOSUMDB} \
     CGO_ENABLED=0 \
@@ -35,8 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     ./cmd/server
 
 # Stage 2: Vue frontend (static assets only in final image)
-ARG DOCKER_REGISTRY_MIRROR
-FROM ${DOCKER_REGISTRY_MIRROR}/node:20-alpine AS frontend
+FROM node:20-alpine AS frontend
 
 WORKDIR /app/web
 
@@ -56,8 +53,7 @@ RUN --mount=type=cache,target=/app/web/node_modules \
     npm run build
 
 # Stage 3: Runtime
-ARG DOCKER_REGISTRY_MIRROR
-FROM ${DOCKER_REGISTRY_MIRROR}/alpine:3.21 AS runtime
+FROM alpine:3.21 AS runtime
 
 LABEL org.opencontainers.image.title="gps-data-receiver" \
       org.opencontainers.image.description="GPS data receiver and forwarding service"
