@@ -39,7 +39,6 @@ build/
 
 # Dependencies (node_modules resolved during image build; Go deps vendored in vendor/)
 web/node_modules/
-web/dist/
 
 # Runtime logs
 logs/

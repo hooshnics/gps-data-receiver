@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint vendor docker-build docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -126,15 +126,19 @@ deps: ## Download Go dependencies
 	@echo "Dependencies downloaded"
 
 DOCKER_IMAGE ?= gps-receiver:latest
-DOCKER_CACHE_FROM := $(shell docker image inspect $(DOCKER_IMAGE) >/dev/null 2>&1 && echo --cache-from $(DOCKER_IMAGE))
-DOCKER_BUILD_FLAGS ?= $(DOCKER_CACHE_FROM) --build-arg BUILDKIT_INLINE_CACHE=1
+DOCKER_BUILD_FLAGS ?= --build-arg BUILDKIT_INLINE_CACHE=1
 
-docker-build: ## Build Docker image with BuildKit (faster)
+docker-build: web-build ## Build Docker image with BuildKit (builds frontend first)
 	@echo "Building Docker image with BuildKit..."
 	DOCKER_BUILDKIT=1 docker build $(DOCKER_BUILD_FLAGS) -t $(DOCKER_IMAGE) .
 	@echo "Docker image built: $(DOCKER_IMAGE)"
 
-docker-up: ## Start all services with Docker Compose (uses BuildKit)
+docker-build-clean: web-build ## Build Docker image without cache
+	@echo "Building Docker image with BuildKit (no cache)..."
+	DOCKER_BUILDKIT=1 docker build --no-cache $(DOCKER_BUILD_FLAGS) -t $(DOCKER_IMAGE) .
+	@echo "Docker image built: $(DOCKER_IMAGE)"
+
+docker-up: web-build ## Start all services with Docker Compose (uses BuildKit)
 	@echo "Starting services with BuildKit..."
 	DOCKER_BUILDKIT=1 $(DOCKER_COMPOSE) up -d --build
 	@echo "Services started. Use 'make docker-logs' to view logs"
