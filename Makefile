@@ -10,13 +10,9 @@ BINARY_PATH=./$(BINARY_NAME)
 # Docker Compose (V2 plugin)
 DOCKER_COMPOSE=docker compose
 
-# Iranian mirrors (override for non-Iranian networks: GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org)
-GOPROXY ?= https://mirror.kargadan.ir/repository/go-group/,direct
-GOSUMDB ?= off
+GOPROXY ?= https://proxy.golang.org,direct
+GOSUMDB ?= sum.golang.org
 export GOPROXY GOSUMDB
-
-# Docker registry mirror for base images (override: DOCKER_REGISTRY_MIRROR= for Docker Hub)
-DOCKER_REGISTRY_MIRROR ?= docker.arvancloud.ir
 
 # Go parameters
 GOCMD=go
@@ -127,7 +123,6 @@ deps: ## Download Go dependencies
 DOCKER_IMAGE ?= gps-receiver:latest
 DOCKER_CACHE_FROM := $(shell docker image inspect $(DOCKER_IMAGE) >/dev/null 2>&1 && echo --cache-from $(DOCKER_IMAGE))
 DOCKER_BUILD_FLAGS ?= $(DOCKER_CACHE_FROM) --build-arg BUILDKIT_INLINE_CACHE=1 \
-	--build-arg DOCKER_REGISTRY_MIRROR=$(DOCKER_REGISTRY_MIRROR) \
 	--build-arg GOPROXY=$(GOPROXY) \
 	--build-arg GOSUMDB=$(GOSUMDB)
 
@@ -136,7 +131,7 @@ docker-build: ## Build Docker image with BuildKit (faster)
 	DOCKER_BUILDKIT=1 docker build $(DOCKER_BUILD_FLAGS) -t $(DOCKER_IMAGE) .
 	@echo "Docker image built: $(DOCKER_IMAGE)"
 
-docker-up: ## Start all services with Docker Compose (uses BuildKit). Override mirrors: DOCKER_REGISTRY_MIRROR= GOPROXY=https://proxy.golang.org,direct make docker-up
+docker-up: ## Start all services with Docker Compose (uses BuildKit)
 	@echo "Starting services with BuildKit..."
 	DOCKER_BUILDKIT=1 $(DOCKER_COMPOSE) up -d --build
 	@echo "Services started. Use 'make docker-logs' to view logs"
