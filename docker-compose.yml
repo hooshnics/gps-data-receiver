@@ -5,9 +5,6 @@ x-app-build: &app-build
   dockerfile: Dockerfile
   cache_from:
     - gps-receiver:latest
-  args:
-    GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-    GOSUMDB: ${GOSUMDB:-sum.golang.org}
 
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s

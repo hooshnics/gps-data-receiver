@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint docker-build docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint vendor docker-build docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -115,6 +115,11 @@ tidy: ## Tidy Go modules
 	$(GOMOD) tidy
 	@echo "Tidy complete"
 
+vendor: tidy ## Refresh vendored Go dependencies for Docker builds
+	@echo "Vendoring Go modules..."
+	$(GOMOD) vendor
+	@echo "Vendor directory updated"
+
 deps: ## Download Go dependencies
 	@echo "Downloading dependencies..."
 	$(GOMOD) download
@@ -122,9 +127,7 @@ deps: ## Download Go dependencies
 
 DOCKER_IMAGE ?= gps-receiver:latest
 DOCKER_CACHE_FROM := $(shell docker image inspect $(DOCKER_IMAGE) >/dev/null 2>&1 && echo --cache-from $(DOCKER_IMAGE))
-DOCKER_BUILD_FLAGS ?= $(DOCKER_CACHE_FROM) --build-arg BUILDKIT_INLINE_CACHE=1 \
-	--build-arg GOPROXY=$(GOPROXY) \
-	--build-arg GOSUMDB=$(GOSUMDB)
+DOCKER_BUILD_FLAGS ?= $(DOCKER_CACHE_FROM) --build-arg BUILDKIT_INLINE_CACHE=1
 
 docker-build: ## Build Docker image with BuildKit (faster)
 	@echo "Building Docker image with BuildKit..."

@@ -37,8 +37,7 @@ server
 dist/
 build/
 
-# Dependencies (resolved during image build)
-vendor/
+# Dependencies (node_modules resolved during image build; Go deps vendored in vendor/)
 web/node_modules/
 web/dist/
 
