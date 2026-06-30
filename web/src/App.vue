@@ -14,10 +14,10 @@
             v-model="imeiInput"
             type="text"
             inputmode="numeric"
-            maxlength="10"
-            pattern="\d{10}"
-            placeholder="IMEI (10 digits)"
-            class="w-40 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            maxlength="15"
+            pattern="\d{15}"
+            placeholder="867994064030931"
+            class="w-48 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
             :class="{ 'border-red-400 focus:border-red-500 focus:ring-red-500': imeiFilterError }"
           />
         </form>
@@ -135,7 +135,7 @@ const imeiInput = ref('')
 const activeImeiFilter = ref(/** @type {string|null} */ (null))
 const imeiFilterError = ref(/** @type {string|null} */ (null))
 
-const IMEI_FILTER_PATTERN = /^\d{10}$/
+const IMEI_FILTER_PATTERN = /^\d{15}$/
 
 function applyImeiFilter() {
   const value = imeiInput.value.trim()
@@ -145,7 +145,7 @@ function applyImeiFilter() {
     return
   }
   if (!IMEI_FILTER_PATTERN.test(value)) {
-    imeiFilterError.value = 'IMEI باید دقیقاً ۱۰ رقم باشد.'
+    imeiFilterError.value = 'IMEI باید دقیقاً ۱۵ رقم باشد.'
     return
   }
   activeImeiFilter.value = value
@@ -154,8 +154,7 @@ function applyImeiFilter() {
 
 function imeiMatches(recordImei, filterImei) {
   if (!recordImei || !filterImei) return false
-  const normalized = String(recordImei)
-  return normalized === filterImei || normalized.endsWith(filterImei)
+  return String(recordImei) === filterImei
 }
 
 function extractImeisFromHooshnic(dataStr) {
