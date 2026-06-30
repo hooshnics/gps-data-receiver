@@ -112,7 +112,7 @@
                   </span>
                 </div>
                 <pre
-                  class="mt-2 overflow-x-auto rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700">{{ payloadPreview(pkt.payload) }}</pre>
+                  class="mt-2 overflow-x-auto rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700">{{ payloadPreview(displayPayload(pkt)) }}</pre>
               </li>
             </ul>
             <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
@@ -165,35 +165,94 @@ function extractImeisFromHooshnic(dataStr) {
   return imei ? [imei] : []
 }
 
-function extractImeisFromPayload(payload) {
-  if (!payload || typeof payload !== 'string') return []
-  const imeis = new Set()
+function normalizePayload(payload) {
+  if (payload == null) return ''
+  if (typeof payload === 'string') return payload
   try {
-    const parsed = JSON.parse(payload)
-    const items = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed) ? parsed : []
-    for (const item of items) {
-      if (item && typeof item === 'object' && item.imei) {
-        imeis.add(String(item.imei))
-        continue
-      }
-      const raw = item?.data ?? item
-      if (typeof raw === 'string') {
-        for (const imei of extractImeisFromHooshnic(raw)) {
-          imeis.add(imei)
-        }
+    return JSON.stringify(payload)
+  } catch {
+    return String(payload)
+  }
+}
+
+function collectPayloadItems(parsed) {
+  if (Array.isArray(parsed)) return parsed
+  if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.data)) return parsed.data
+    if (typeof parsed.data === 'string') return [{ data: parsed.data }]
+    if (parsed.data && typeof parsed.data === 'object') return [parsed.data]
+    return [parsed]
+  }
+  return []
+}
+
+function itemImeis(item) {
+  if (!item || typeof item !== 'object') {
+    if (typeof item === 'string') return extractImeisFromHooshnic(item)
+    return []
+  }
+  if (item.imei) return [String(item.imei)]
+  const raw = item.data ?? item
+  if (typeof raw === 'string') return extractImeisFromHooshnic(raw)
+  return []
+}
+
+function extractImeisFromPayload(payload) {
+  const text = normalizePayload(payload)
+  if (!text) return []
+  const imeis = new Set()
+
+  try {
+    let parsed = JSON.parse(text)
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed)
+    }
+    for (const item of collectPayloadItems(parsed)) {
+      for (const imei of itemImeis(item)) {
+        imeis.add(imei)
       }
     }
   } catch {
-    for (const imei of extractImeisFromHooshnic(payload)) {
-      imeis.add(imei)
+    // fall through to text scan
+  }
+
+  if (imeis.size === 0) {
+    for (const match of text.matchAll(/\d{15}/g)) {
+      imeis.add(match[0])
     }
   }
+
   return [...imeis]
 }
 
 function payloadMatchesImeiFilter(payload, filterImei) {
   if (!filterImei) return true
-  return extractImeisFromPayload(payload).some((imei) => imeiMatches(imei, filterImei))
+  const text = normalizePayload(payload)
+  return extractImeisFromPayload(text).some((imei) => imeiMatches(imei, filterImei))
+    || text.includes(filterImei)
+}
+
+function filterPayloadForImei(payload, filterImei) {
+  const text = normalizePayload(payload)
+  if (!filterImei || !text) return text
+
+  try {
+    let parsed = JSON.parse(text)
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed)
+    }
+    const items = collectPayloadItems(parsed)
+    const filtered = items.filter((item) =>
+      itemImeis(item).some((imei) => imeiMatches(imei, filterImei)),
+    )
+    if (Array.isArray(parsed)) return JSON.stringify(filtered, null, 2)
+    if (parsed && typeof parsed === 'object' && 'data' in parsed) {
+      return JSON.stringify({ ...parsed, data: filtered }, null, 2)
+    }
+    return JSON.stringify(filtered, null, 2)
+  } catch {
+    return text.includes(filterImei) ? text : ''
+  }
 }
 
 const persianDateFormatter = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
@@ -218,9 +277,16 @@ function formatTime(iso) {
 }
 
 function payloadPreview(payload, maxLen = 320) {
-  if (typeof payload !== 'string') return ''
-  if (payload.length <= maxLen) return payload
-  return payload.slice(0, maxLen) + '…'
+  const text = normalizePayload(payload)
+  if (!text) return ''
+  if (text.length <= maxLen) return text
+  return text.slice(0, maxLen) + '…'
+}
+
+function displayPayload(pkt) {
+  const filter = activeImeiFilter.value
+  if (!filter) return pkt.payload
+  return filterPayloadForImei(pkt.payload, filter)
 }
 
 function extractRecordsFromPayload(payload) {
