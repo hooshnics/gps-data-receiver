@@ -119,7 +119,7 @@ func TestAPIIntegration_ReceiveAndParseGPSData(t *testing.T) {
 	redisQueue := setupTestRedis(t)
 	defer redisQueue.Close()
 
-	handler := api.NewHandler(redisQueue, 0, nil)
+	handler := api.NewHandler(redisQueue, 0, nil, nil)
 
 	router := gin.New()
 	router.Use(api.RequestIDMiddleware())

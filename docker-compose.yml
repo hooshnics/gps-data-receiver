@@ -36,6 +36,28 @@ services:
       retries: 5
       start_period: 5s
 
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: gps-postgres
+    pull_policy: if_not_present
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: gps
+      POSTGRES_PASSWORD: gps
+      POSTGRES_DB: gps_receiver
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - gps-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gps -d gps_receiver"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   app:
     build:
       <<: *app-build
@@ -88,8 +110,17 @@ services:
       LOG_LEVEL: info
       LOG_FORMAT: json
       ENVIRONMENT: production
+      POSTGRES_ENABLED: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: gps
+      POSTGRES_PASSWORD: gps
+      POSTGRES_DB: gps_receiver
+      POSTGRES_SSLMODE: disable
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - gps-network
@@ -131,7 +162,7 @@ services:
       retries: 3
 
   cadvisor:
-    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/dockette/cadvisor:latest
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.51.0}
     container_name: gps-cadvisor
     pull_policy: if_not_present
     ports:
@@ -141,10 +172,10 @@ services:
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
     privileged: true
-    devices:
-      - /dev/kmsg
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
     networks:
       - gps-network
     restart: unless-stopped
@@ -153,6 +184,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 30s
 
   prometheus:
     image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/prom/prometheus:v3.4.2
@@ -221,5 +253,6 @@ networks:
 
 volumes:
   redis-data:
+  postgres-data:
   prometheus-data:
   grafana-data:

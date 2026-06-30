@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/queue"
+	"github.com/gps-data-receiver/internal/storage"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
 	"go.uber.org/zap"
@@ -86,6 +87,7 @@ type Handler struct {
 	queue             *queue.RedisQueue
 	backpressureLimit int64
 	broadcast         BroadcastEmitter
+	store             *storage.PostgresStore
 
 	// Cached depth so we don't need a separate XLEN call on every request;
 	// updated atomically after each EnqueueWithDepth pipeline call.
@@ -94,11 +96,12 @@ type Handler struct {
 
 // NewHandler creates a new handler. backpressureLimit is the queue depth at which to return 503 (0 = 90% of Redis MaxLen).
 // broadcast is optional; when non-nil, received GPS packets are broadcast (e.g. for real-time frontend).
-func NewHandler(q *queue.RedisQueue, backpressureLimit int64, broadcast BroadcastEmitter) *Handler {
+func NewHandler(q *queue.RedisQueue, backpressureLimit int64, broadcast BroadcastEmitter, store *storage.PostgresStore) *Handler {
 	h := &Handler{
 		queue:             q,
 		backpressureLimit: backpressureLimit,
 		broadcast:         broadcast,
+		store:             store,
 	}
 	return h
 }

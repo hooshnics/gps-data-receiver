@@ -22,6 +22,7 @@ type Config struct {
 	Filter    FilterConfig
 	Tracking  TrackingConfig
 	RawLog    RawLogConfig
+	Postgres  PostgresConfig
 }
 
 // ServerConfig holds server configuration
@@ -98,6 +99,17 @@ type RawLogConfig struct {
 	BufferSize int
 }
 
+// PostgresConfig holds PostgreSQL configuration
+type PostgresConfig struct {
+	Enabled  bool
+	Host     string
+	Port     string
+	User     string
+	Password string
+	DBName   string
+	SSLMode  string
+}
+
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if not found)
@@ -157,6 +169,15 @@ func Load() (*Config, error) {
 			Enabled:    getBool("RAW_LOG_ENABLED", true),
 			BaseDir:    getEnv("RAW_LOG_DIR", "logs/raw"),
 			BufferSize: getInt("RAW_LOG_BUFFER_SIZE", 10000),
+		},
+		Postgres: PostgresConfig{
+			Enabled:  getBool("POSTGRES_ENABLED", true),
+			Host:     getEnv("POSTGRES_HOST", "localhost"),
+			Port:     getEnv("POSTGRES_PORT", "5432"),
+			User:     getEnv("POSTGRES_USER", "gps"),
+			Password: getEnv("POSTGRES_PASSWORD", "gps"),
+			DBName:   getEnv("POSTGRES_DB", "gps_receiver"),
+			SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
 		},
 	}
 
@@ -262,4 +283,12 @@ func getFloat64(key string, defaultValue float64) float64 {
 // GetRedisAddr returns the Redis address
 func (c *RedisConfig) GetAddr() string {
 	return fmt.Sprintf("%s:%s", c.Host, c.Port)
+}
+
+// DSN returns the PostgreSQL connection string
+func (c *PostgresConfig) DSN() string {
+	return fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode,
+	)
 }

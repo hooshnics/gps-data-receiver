@@ -47,7 +47,7 @@ func TestAPIIntegration_ReceiveGPSData(t *testing.T) {
 	redisQueue := setupTestRedis(t)
 	defer redisQueue.Close()
 
-	handler := api.NewHandler(redisQueue, 0, nil)
+	handler := api.NewHandler(redisQueue, 0, nil, nil)
 
 	router := gin.New()
 	router.Use(api.RequestIDMiddleware())
@@ -106,7 +106,7 @@ func TestAPIIntegration_ConcurrentRequests(t *testing.T) {
 	redisQueue := setupTestRedis(t)
 	defer redisQueue.Close()
 
-	handler := api.NewHandler(redisQueue, 0, nil)
+	handler := api.NewHandler(redisQueue, 0, nil, nil)
 
 	router := gin.New()
 	router.Use(api.RequestIDMiddleware())
@@ -163,7 +163,7 @@ func TestAPIIntegration_HealthCheck(t *testing.T) {
 	redisQueue := setupTestRedis(t)
 	defer redisQueue.Close()
 
-	handler := api.NewHandler(redisQueue, 0, nil)
+	handler := api.NewHandler(redisQueue, 0, nil, nil)
 
 	router := gin.New()
 	router.GET("/health", handler.Health)
