@@ -88,11 +88,17 @@ export function useGpsPackets() {
         console.log('[Socket.IO] gps-packet received', data)
       }
       if (data && typeof data === 'object') {
+        const rawPayload = data.payload
         packets.value = [
           {
             message_id: data.message_id ?? '',
             received_at: data.received_at ?? new Date().toISOString(),
-            payload: data.payload ?? '',
+            payload:
+              typeof rawPayload === 'string'
+                ? rawPayload
+                : rawPayload != null
+                  ? JSON.stringify(rawPayload)
+                  : '',
             payload_size: typeof data.payload_size === 'number' ? data.payload_size : 0,
           },
           ...packets.value,
