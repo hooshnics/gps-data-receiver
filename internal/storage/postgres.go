@@ -1,0 +1,201 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"regexp"
+	"time"
+
+	gojson "github.com/goccy/go-json"
+	"github.com/gps-data-receiver/internal/parser"
+	"github.com/gps-data-receiver/pkg/logger"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"go.uber.org/zap"
+)
+
+var imeiPattern = regexp.MustCompile(`^\d{15}$`)
+
+// Record represents a stored GPS record row.
+type Record struct {
+	ID         int64             `json:"id"`
+	IMEI       string            `json:"imei"`
+	RawData    string            `json:"raw_data"`
+	ParsedData gojson.RawMessage `json:"parsed_data"`
+	CreatedAt  time.Time         `json:"created_at"`
+}
+
+// QueryFilter filters stored records by date and optional IMEI.
+type QueryFilter struct {
+	DateStart time.Time // inclusive, in query timezone
+	DateEnd   time.Time // exclusive
+	IMEI      string
+	Limit     int
+}
+
+// PostgresStore persists GPS records to PostgreSQL.
+type PostgresStore struct {
+	db *sql.DB
+}
+
+// NewPostgresStore opens a PostgreSQL connection and ensures the schema exists.
+func NewPostgresStore(dsn string) (*PostgresStore, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	store := &PostgresStore{db: db}
+	if err := store.migrate(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return store, nil
+}
+
+func (s *PostgresStore) migrate(ctx context.Context) error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS gps_records (
+    id BIGSERIAL PRIMARY KEY,
+    imei VARCHAR(15) NOT NULL,
+    raw_data TEXT NOT NULL,
+    parsed_data JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gps_records_created_at ON gps_records (created_at);
+CREATE INDEX IF NOT EXISTS idx_gps_records_imei_created_at ON gps_records (imei, created_at);
+`
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("migrate postgres schema: %w", err)
+	}
+	return nil
+}
+
+// StoreRecords inserts successfully delivered GPS records.
+func (s *PostgresStore) StoreRecords(ctx context.Context, records []parser.ParsedGPSData) error {
+	if s == nil || len(records) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO gps_records (imei, raw_data, parsed_data, created_at)
+VALUES ($1, $2, $3, $4)
+`)
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for _, record := range records {
+		if record.IMEI == "" || !imeiPattern.MatchString(record.IMEI) {
+			continue
+		}
+
+		parsedPayload := map[string]interface{}{
+			"coordinate": record.Coordinate,
+			"speed":      record.Speed,
+			"status":     record.Status,
+			"directions": record.Directions,
+			"date_time":  record.DateTime,
+			"imei":       record.IMEI,
+		}
+		parsedJSON, err := gojson.Marshal(parsedPayload)
+		if err != nil {
+			logger.Warn("Failed to marshal parsed GPS record for storage",
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			continue
+		}
+
+		rawData := record.RawData
+		if rawData == "" {
+			rawData = " "
+		}
+
+		if _, err := stmt.ExecContext(ctx, record.IMEI, rawData, parsedJSON, now); err != nil {
+			logger.Warn("Failed to insert GPS record",
+				zap.String("imei", record.IMEI),
+				zap.Error(err))
+			continue
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// QueryRecords returns stored records for the given filter.
+func (s *PostgresStore) QueryRecords(ctx context.Context, filter QueryFilter) ([]Record, error) {
+	if s == nil {
+		return nil, fmt.Errorf("postgres store not initialized")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 5000
+	}
+
+	query := `
+SELECT id, imei, raw_data, parsed_data, created_at
+FROM gps_records
+WHERE created_at >= $1 AND created_at < $2
+`
+	args := []interface{}{filter.DateStart.UTC(), filter.DateEnd.UTC()}
+
+	if filter.IMEI != "" {
+		query += ` AND imei = $3`
+		args = append(args, filter.IMEI)
+	}
+
+	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT %d`, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query records: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]Record, 0)
+	for rows.Next() {
+		var rec Record
+		if err := rows.Scan(&rec.ID, &rec.IMEI, &rec.RawData, &rec.ParsedData, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan record: %w", err)
+		}
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate records: %w", err)
+	}
+
+	return records, nil
+}
+
+// Close closes the database connection.
+func (s *PostgresStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}

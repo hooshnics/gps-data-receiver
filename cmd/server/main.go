@@ -22,6 +22,7 @@ import (
 	"github.com/gps-data-receiver/internal/rawlog"
 	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/gps-data-receiver/internal/sender"
+	"github.com/gps-data-receiver/internal/storage"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
 	socketio "github.com/ismhdez/socket.io-golang/v4"
@@ -102,6 +103,19 @@ func main() {
 		logger.Info("Raw data file logging enabled",
 			zap.String("base_dir", cfg.RawLog.BaseDir),
 			zap.Int("buffer_size", cfg.RawLog.BufferSize))
+	}
+
+	var postgresStore *storage.PostgresStore
+	if cfg.Postgres.Enabled {
+		store, err := storage.NewPostgresStore(cfg.Postgres.DSN())
+		if err != nil {
+			logger.Fatal("Failed to initialize PostgreSQL storage", zap.Error(err))
+		}
+		postgresStore = store
+		defer postgresStore.Close()
+		logger.Info("PostgreSQL storage enabled",
+			zap.String("host", cfg.Postgres.Host),
+			zap.String("db", cfg.Postgres.DBName))
 	}
 
 	// Create message handler that sends data to destination servers and broadcasts on success
@@ -205,6 +219,15 @@ func main() {
 
 		rawLogger.LogRecords(filteredData)
 
+		if postgresStore != nil {
+			storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := postgresStore.StoreRecords(storeCtx, filteredData); err != nil {
+				logger.Warn("Failed to store GPS records in PostgreSQL",
+					zap.Error(err))
+			}
+			storeCancel()
+		}
+
 		// Broadcast delivered packet to frontend (async, non-blocking)
 		if asyncBroadcaster != nil {
 			payload := map[string]interface{}{
@@ -273,10 +296,11 @@ func main() {
 
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
 	// Use async broadcaster for non-blocking Socket.IO emissions
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, asyncBroadcaster)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, asyncBroadcaster, postgresStore)
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
+	router.GET("/api/gps/records", handler.QueryGPSRecords)
 	router.GET("/health", handler.Health)
 	router.HEAD("/health", handler.Health)
 	router.GET("/ready", handler.Ready)

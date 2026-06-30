@@ -6,7 +6,7 @@ ARG DOCKER_REGISTRY=docker.arvancloud.ir
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # Stage 1: Go backend
-FROM ${DOCKER_REGISTRY}/golang:1.24-alpine AS builder
+FROM ${DOCKER_REGISTRY}/golang:1.25-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
