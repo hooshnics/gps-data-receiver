@@ -1,6 +1,34 @@
 <template>
   <div class="min-h-screen bg-slate-50 text-slate-900" dir="rtl">
     <main class="mx-auto max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
+      <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <form class="flex flex-wrap items-center gap-2" dir="ltr" @submit.prevent="applyImeiFilter">
+          <button
+            type="submit"
+            class="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!imeiInput.trim()"
+          >
+            فیلتر
+          </button>
+          <input
+            v-model="imeiInput"
+            type="text"
+            inputmode="numeric"
+            maxlength="10"
+            pattern="\d{10}"
+            placeholder="IMEI (10 digits)"
+            class="w-40 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            :class="{ 'border-red-400 focus:border-red-500 focus:ring-red-500': imeiFilterError }"
+          />
+        </form>
+        <div v-if="activeImeiFilter" class="text-sm text-slate-600">
+          فیلتر IMEI:
+          <span class="font-mono font-medium text-slate-800">{{ activeImeiFilter }}</span>
+        </div>
+      </div>
+      <div v-if="imeiFilterError" class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        {{ imeiFilterError }}
+      </div>
       <div v-if="error" class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         {{ error }}
       </div>
@@ -98,10 +126,76 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useGpsPackets } from './composables/useGpsPackets'
 
 const { packets, deliveredPackets, connected, error, clearPackets, clearDeliveredPackets } = useGpsPackets()
+
+const imeiInput = ref('')
+const activeImeiFilter = ref(/** @type {string|null} */ (null))
+const imeiFilterError = ref(/** @type {string|null} */ (null))
+
+const IMEI_FILTER_PATTERN = /^\d{10}$/
+
+function applyImeiFilter() {
+  const value = imeiInput.value.trim()
+  if (!value) {
+    activeImeiFilter.value = null
+    imeiFilterError.value = null
+    return
+  }
+  if (!IMEI_FILTER_PATTERN.test(value)) {
+    imeiFilterError.value = 'IMEI باید دقیقاً ۱۰ رقم باشد.'
+    return
+  }
+  activeImeiFilter.value = value
+  imeiFilterError.value = null
+}
+
+function imeiMatches(recordImei, filterImei) {
+  if (!recordImei || !filterImei) return false
+  const normalized = String(recordImei)
+  return normalized === filterImei || normalized.endsWith(filterImei)
+}
+
+function extractImeisFromHooshnic(dataStr) {
+  if (typeof dataStr !== 'string' || !dataStr) return []
+  const lastComma = dataStr.lastIndexOf(',')
+  if (lastComma === -1) return []
+  const imei = dataStr.slice(lastComma + 1).trim()
+  return imei ? [imei] : []
+}
+
+function extractImeisFromPayload(payload) {
+  if (!payload || typeof payload !== 'string') return []
+  const imeis = new Set()
+  try {
+    const parsed = JSON.parse(payload)
+    const items = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed) ? parsed : []
+    for (const item of items) {
+      if (item && typeof item === 'object' && item.imei) {
+        imeis.add(String(item.imei))
+        continue
+      }
+      const raw = item?.data ?? item
+      if (typeof raw === 'string') {
+        for (const imei of extractImeisFromHooshnic(raw)) {
+          imeis.add(imei)
+        }
+      }
+    }
+  } catch {
+    for (const imei of extractImeisFromHooshnic(payload)) {
+      imeis.add(imei)
+    }
+  }
+  return [...imeis]
+}
+
+function payloadMatchesImeiFilter(payload, filterImei) {
+  if (!filterImei) return true
+  return extractImeisFromPayload(payload).some((imei) => imeiMatches(imei, filterImei))
+}
 
 const persianDateFormatter = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
   year: 'numeric',
@@ -229,8 +323,20 @@ const deliveredRows = computed(() => {
 })
 
 /** Latest 15 records, newest at top (composable already keeps newest first). */
-const displayedDeliveredRows = computed(() => deliveredRows.value.slice(0, 15))
+const displayedDeliveredRows = computed(() => {
+  const filter = activeImeiFilter.value
+  const rows = filter
+    ? deliveredRows.value.filter((row) => imeiMatches(row.imei, filter))
+    : deliveredRows.value
+  return rows.slice(0, 15)
+})
 
 /** Latest 15 packets, newest at top (composable already keeps newest first). */
-const displayedPackets = computed(() => packets.value.slice(0, 15))
+const displayedPackets = computed(() => {
+  const filter = activeImeiFilter.value
+  const list = filter
+    ? packets.value.filter((pkt) => payloadMatchesImeiFilter(pkt.payload, filter))
+    : packets.value
+  return list.slice(0, 15)
+})
 </script>
