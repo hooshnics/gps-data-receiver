@@ -1,8 +1,14 @@
 name: gps-data-receiver
 
+# Default registry mirror for environments with limited Docker Hub / GCR access (e.g. Iran).
+# Override in .env: DOCKER_REGISTRY=docker.io
+
 x-app-build: &app-build
   context: .
   dockerfile: Dockerfile
+  args:
+    DOCKER_REGISTRY: ${DOCKER_REGISTRY:-docker.arvancloud.ir}
+    NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
 
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s
@@ -12,7 +18,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 
 services:
   redis:
-    image: redis:7.4-alpine
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/redis:7.4-alpine
     container_name: gps-redis
     pull_policy: if_not_present
     ports:
@@ -98,7 +104,7 @@ services:
       start_period: 30s
 
   node-exporter:
-    image: prom/node-exporter:v1.9.1
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/prom/node-exporter:v1.9.1
     container_name: gps-node-exporter
     pull_policy: if_not_present
     ports:
@@ -125,7 +131,7 @@ services:
       retries: 3
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    image: ${CADVISOR_IMAGE:-docker.arvancloud.ir/gcr.io/cadvisor/cadvisor:v0.55.1}
     container_name: gps-cadvisor
     pull_policy: if_not_present
     ports:
@@ -149,7 +155,7 @@ services:
       retries: 3
 
   prometheus:
-    image: prom/prometheus:v3.4.2
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/prom/prometheus:v3.4.2
     container_name: gps-prometheus
     pull_policy: if_not_present
     ports:
@@ -180,7 +186,7 @@ services:
       <<: *healthcheck-defaults
 
   grafana:
-    image: grafana/grafana:11.6.1
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/grafana/grafana:11.6.1
     container_name: gps-grafana
     pull_policy: if_not_present
     ports:

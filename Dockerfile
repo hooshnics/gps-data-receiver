@@ -1,8 +1,12 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker.arvancloud.ir/docker/dockerfile:1.7
 # Multi-stage build: Go backend and Vue frontend build in parallel; minimal runtime image.
+# Defaults use Arvan Cloud mirrors for environments with limited Docker Hub access (e.g. Iran).
+
+ARG DOCKER_REGISTRY=docker.arvancloud.ir
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # Stage 1: Go backend
-FROM golang:1.24-alpine AS builder
+FROM ${DOCKER_REGISTRY}/golang:1.24-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -31,7 +35,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     ./cmd/server
 
 # Stage 2: Vue frontend (uses pre-built web/dist when present; otherwise builds with npm)
-FROM node:20-alpine AS frontend
+FROM ${DOCKER_REGISTRY}/node:20-alpine AS frontend
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /app/web
 
@@ -45,6 +51,7 @@ COPY --link web/dist ./dist
 
 RUN --mount=type=cache,target=/root/.npm \
     --mount=type=cache,target=/app/web/node_modules \
+    npm config set registry "${NPM_REGISTRY}" && \
     if [ ! -f dist/index.html ]; then \
       npm ci --ignore-scripts --no-audit --no-fund && \
       npm run build; \
@@ -53,12 +60,13 @@ RUN --mount=type=cache,target=/root/.npm \
     fi
 
 # Stage 3: Runtime
-FROM alpine:3.21 AS runtime
+FROM ${DOCKER_REGISTRY}/alpine:3.21 AS runtime
 
 LABEL org.opencontainers.image.title="gps-data-receiver" \
       org.opencontainers.image.description="GPS data receiver and forwarding service"
 
-RUN apk add --no-cache \
+RUN sed -i 's|https://dl-cdn.alpinelinux.org|https://mirror.arvancloud.ir|g' /etc/apk/repositories && \
+    apk add --no-cache \
     ca-certificates \
     tzdata \
     wget && \
