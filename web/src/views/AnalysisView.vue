@@ -172,9 +172,10 @@ const datepickerStyles = {
   input: 'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500',
 }
 
-const todayJalali = new PersianDate(undefined, 'jalali').toString('YYYY-MM-DD')
+// DatePicker format="YYYY-MM-DD" stores Gregorian dates in v-model (not Jalali).
+const todayDate = new PersianDate(undefined, 'jalali').toString('YYYY-MM-DD')
 
-const selectedDate = ref(todayJalali)
+const selectedDate = ref(todayDate)
 const imeiInput = ref('')
 const viewMode = ref('parsed')
 const loading = ref(false)
@@ -184,11 +185,6 @@ const hasSearched = ref(false)
 const resultRecords = ref([])
 const resultCount = ref(null)
 const expandedRaw = ref(new Set())
-
-function jalaliToGregorian(jalaliDateStr) {
-  const normalized = String(jalaliDateStr).replace(/-/g, '/')
-  return new PersianDate(normalized, 'jalali').calendar('gregorian').toString('YYYY-MM-DD')
-}
 
 function parseParsedData(raw) {
   if (!raw) return {}
@@ -273,8 +269,7 @@ async function submitQuery() {
   expandedRaw.value = new Set()
 
   try {
-    const gregorianDate = jalaliToGregorian(selectedDate.value)
-    const params = new URLSearchParams({ date: gregorianDate })
+    const params = new URLSearchParams({ date: selectedDate.value })
     if (imei) params.set('imei', imei)
 
     const response = await fetch(`/api/gps/records?${params.toString()}`)
