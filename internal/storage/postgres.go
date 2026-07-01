@@ -25,10 +25,10 @@ type Record struct {
 	CreatedAt  time.Time         `json:"created_at"`
 }
 
-// QueryFilter filters stored records by date and optional IMEI.
+// QueryFilter filters stored records by device date_time and optional IMEI.
 type QueryFilter struct {
-	DateStart time.Time // inclusive, in query timezone
-	DateEnd   time.Time // exclusive
+	DateStart time.Time // inclusive start of day in query timezone
+	DateEnd   time.Time // exclusive end of day in query timezone
 	IMEI      string
 	Limit     int
 }
@@ -157,12 +157,15 @@ func (s *PostgresStore) QueryRecords(ctx context.Context, filter QueryFilter) ([
 		limit = 5000
 	}
 
+	dateStart := filter.DateStart.Format("2006-01-02") + " 00:00:00"
+	dateEnd := filter.DateEnd.Format("2006-01-02") + " 00:00:00"
+
 	query := `
 SELECT id, imei, raw_data, parsed_data, created_at
 FROM gps_records
-WHERE created_at >= $1 AND created_at < $2
+WHERE parsed_data->>'date_time' >= $1 AND parsed_data->>'date_time' < $2
 `
-	args := []interface{}{filter.DateStart.UTC(), filter.DateEnd.UTC()}
+	args := []interface{}{dateStart, dateEnd}
 
 	if filter.IMEI != "" {
 		query += ` AND imei = $3`
