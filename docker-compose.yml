@@ -162,7 +162,7 @@ services:
       retries: 3
 
   cadvisor:
-    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.51.0}
+    image: ${CADVISOR_IMAGE:-${DOCKER_REGISTRY:-docker.arvancloud.ir}/dockette/cadvisor:0.56.2}
     container_name: gps-cadvisor
     pull_policy: if_not_present
     ports:
