@@ -165,6 +165,9 @@ func TestParse_BrokenJSONKeepsValidRecords(t *testing.T) {
 
 func TestParse_DataSamples(t *testing.T) {
 	raw, err := os.ReadFile("../../data-samples.txt")
+	if os.IsNotExist(err) {
+		t.Skip("data-samples.txt not found")
+	}
 	require.NoError(t, err)
 
 	groups := strings.Split(string(raw), "------------------")
