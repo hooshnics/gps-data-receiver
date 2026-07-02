@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,12 @@ import (
 
 // MessageHandler is a function type that processes a message
 type MessageHandler func(ctx context.Context, data []byte) error
+
+// retryableError is implemented by errors that specify a delay before redelivery.
+type retryableError interface {
+	error
+	RetryDelay() time.Duration
+}
 
 // Consumer handles consuming messages from Redis Stream
 type Consumer struct {
@@ -231,10 +238,30 @@ func (c *Consumer) handleMessage(workerID int, message redis.XMessage) bool {
 
 	err := c.handler(ctx, data)
 	if err != nil {
-		logger.Warn("Message processing failed, leaving in queue for redelivery",
-			zap.Int("worker_id", workerID),
-			zap.String("message_id", message.ID),
-			zap.Error(err))
+		var re retryableError
+		if errors.As(err, &re) {
+			delay := re.RetryDelay()
+			const maxDelay = 30 * time.Second
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			if delay > 0 {
+				logger.Warn("Rate-limited message, delaying redelivery",
+					zap.Int("worker_id", workerID),
+					zap.String("message_id", message.ID),
+					zap.Duration("delay", delay),
+					zap.Error(err))
+				select {
+				case <-time.After(delay):
+				case <-c.ctx.Done():
+				}
+			}
+		} else {
+			logger.Warn("Message processing failed, leaving in queue for redelivery",
+				zap.Int("worker_id", workerID),
+				zap.String("message_id", message.ID),
+				zap.Error(err))
+		}
 		return false
 	}
 
@@ -315,7 +342,11 @@ func (c *Consumer) claimStaleMessages(consumerName string) {
 
 // dropExcessiveRetries finds pending messages whose delivery count has reached
 // maxRetries and permanently removes them from the stream.
+// When maxRetries is 0 or negative, messages are never dropped.
 func (c *Consumer) dropExcessiveRetries() {
+	if c.maxRetries <= 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
 

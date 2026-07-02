@@ -12,16 +12,17 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server    ServerConfig
-	Redis     RedisConfig
-	Worker    WorkerConfig
-	Retry     RetryConfig
-	HTTP      HTTPConfig
-	RateLimit RateLimitConfig
-	Logging   LoggingConfig
-	Filter    FilterConfig
-	Tracking  TrackingConfig
-	Postgres  PostgresConfig
+	Server             ServerConfig
+	Redis              RedisConfig
+	Worker             WorkerConfig
+	Retry              RetryConfig
+	HTTP               HTTPConfig
+	RateLimit          RateLimitConfig
+	OutgoingRateLimit  OutgoingRateLimitConfig
+	Logging            LoggingConfig
+	Filter             FilterConfig
+	Tracking           TrackingConfig
+	Postgres           PostgresConfig
 }
 
 // ServerConfig holds server configuration
@@ -70,6 +71,13 @@ type HTTPConfig struct {
 type RateLimitConfig struct {
 	RequestsPerSecond int
 	Burst             int
+}
+
+// OutgoingRateLimitConfig holds per-destination outgoing rate limit configuration.
+// RequestsPerSecond of 0 disables the limiter (unlimited).
+type OutgoingRateLimitConfig struct {
+	RequestsPerSecond int
+	BurstSize         int
 }
 
 // LoggingConfig holds logging configuration
@@ -143,6 +151,10 @@ func Load() (*Config, error) {
 		RateLimit: RateLimitConfig{
 			RequestsPerSecond: getInt("RATE_LIMIT_REQUESTS_PER_SECOND", 15000), // Increased for 10K RPS
 			Burst:             getInt("RATE_LIMIT_BURST", 20000),               // Increased for 10K RPS
+		},
+		OutgoingRateLimit: OutgoingRateLimitConfig{
+			RequestsPerSecond: getInt("OUTGOING_RATE_LIMIT_RPS", 50),
+			BurstSize:         getInt("OUTGOING_RATE_LIMIT_BURST", 100),
 		},
 		Logging: LoggingConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),

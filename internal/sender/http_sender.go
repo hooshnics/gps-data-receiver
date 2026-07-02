@@ -3,25 +3,47 @@ package sender
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/pkg/logger"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
+
+// ErrRateLimited is returned when a destination responds with HTTP 429.
+type ErrRateLimited struct {
+	Server     string
+	RetryAfter time.Duration
+}
+
+func (e *ErrRateLimited) Error() string {
+	return fmt.Sprintf("rate limited by %s, retry after %s", e.Server, e.RetryAfter)
+}
+
+// RetryDelay returns how long to wait before redelivering the message.
+func (e *ErrRateLimited) RetryDelay() time.Duration {
+	return e.RetryAfter
+}
 
 // HTTPSender handles sending data to destination servers
 type HTTPSender struct {
 	client       *http.Client
 	loadBalancer *LoadBalancer
 	retryConfig  *config.RetryConfig
+	limiters     map[string]*rate.Limiter
+	pausedUntil  map[string]time.Time
+	mu           sync.RWMutex
 }
 
 // NewHTTPSender creates a new HTTP sender
@@ -49,14 +71,35 @@ func NewHTTPSender(cfg *config.Config) *HTTPSender {
 
 	loadBalancer := NewLoadBalancer(cfg.HTTP.DestinationServers)
 
+	limiters := make(map[string]*rate.Limiter, len(cfg.HTTP.DestinationServers))
+	if cfg.OutgoingRateLimit.RequestsPerSecond > 0 {
+		rps := rate.Limit(cfg.OutgoingRateLimit.RequestsPerSecond)
+		burst := cfg.OutgoingRateLimit.BurstSize
+		if burst <= 0 {
+			burst = cfg.OutgoingRateLimit.RequestsPerSecond * 2
+		}
+		for _, server := range cfg.HTTP.DestinationServers {
+			limiters[server] = rate.NewLimiter(rps, burst)
+		}
+	}
+
+	pausedUntil := make(map[string]time.Time, len(cfg.HTTP.DestinationServers))
+	for _, server := range cfg.HTTP.DestinationServers {
+		pausedUntil[server] = time.Time{}
+	}
+
 	logger.Info("HTTP sender initialized",
 		zap.Int("server_count", loadBalancer.ServerCount()),
-		zap.Strings("servers", loadBalancer.GetServers()))
+		zap.Strings("servers", loadBalancer.GetServers()),
+		zap.Int("outgoing_rate_limit_rps", cfg.OutgoingRateLimit.RequestsPerSecond),
+		zap.Int("outgoing_rate_limit_burst", cfg.OutgoingRateLimit.BurstSize))
 
 	return &HTTPSender{
 		client:       client,
 		loadBalancer: loadBalancer,
 		retryConfig:  &cfg.Retry,
+		limiters:     limiters,
+		pausedUntil:  pausedUntil,
 	}
 }
 
@@ -81,9 +124,22 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 
 	var lastErr error
 	var lastServer string
+	var rateLimitErr *ErrRateLimited
 
 	for attempt := 1; attempt <= s.retryConfig.MaxAttempts; attempt++ {
-		targetServer := s.loadBalancer.NextServer()
+		targetServer, foundAvailable := s.nextAvailableServer(serverCount)
+		if !foundAvailable {
+			if rateLimitErr != nil {
+				return &SendResult{
+					Success:      false,
+					TargetServer: rateLimitErr.Server,
+					Attempt:      attempt - 1,
+					Error:        rateLimitErr,
+				}
+			}
+			break
+		}
+
 		lastServer = targetServer
 
 		sendStart := time.Now()
@@ -108,6 +164,23 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 		}
 
 		lastErr = err
+
+		var rlErr *ErrRateLimited
+		if errors.As(err, &rlErr) {
+			rateLimitErr = rlErr
+			s.pauseServer(targetServer, time.Now().Add(rlErr.RetryAfter))
+
+			if metrics.AppMetrics != nil {
+				metrics.AppMetrics.RecordSenderRequest(targetServer, "rate_limited", sendDuration)
+			}
+
+			logger.Warn("Destination rate limited, pausing server",
+				zap.String("server", targetServer),
+				zap.Duration("retry_after", rlErr.RetryAfter),
+				zap.Int("attempt", attempt))
+
+			continue
+		}
 
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordSenderRequest(targetServer, "error", sendDuration)
@@ -139,6 +212,19 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 		}
 	}
 
+	if rateLimitErr != nil {
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.RecordSenderFailure(rateLimitErr.Server)
+		}
+
+		return &SendResult{
+			Success:      false,
+			TargetServer: rateLimitErr.Server,
+			Attempt:      s.retryConfig.MaxAttempts,
+			Error:        rateLimitErr,
+		}
+	}
+
 	if metrics.AppMetrics != nil {
 		metrics.AppMetrics.RecordSenderFailure(lastServer)
 	}
@@ -151,8 +237,41 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 	}
 }
 
+func (s *HTTPSender) nextAvailableServer(serverCount int) (string, bool) {
+	for i := 0; i < serverCount; i++ {
+		candidate := s.loadBalancer.NextServer()
+		if !s.isPaused(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func (s *HTTPSender) isPaused(server string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	until, ok := s.pausedUntil[server]
+	return ok && time.Now().Before(until)
+}
+
+func (s *HTTPSender) pauseServer(server string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing, ok := s.pausedUntil[server]; !ok || until.After(existing) {
+		s.pausedUntil[server] = until
+	}
+}
+
 // sendToServer sends data to a specific server
 func (s *HTTPSender) sendToServer(ctx context.Context, serverURL string, data []byte) error {
+	if limiter, ok := s.limiters[serverURL]; ok && limiter != nil {
+		if err := limiter.Wait(ctx); err != nil {
+			return fmt.Errorf("rate limiter wait: %w", err)
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", serverURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -170,11 +289,42 @@ func (s *HTTPSender) sendToServer(ctx context.Context, serverURL string, data []
 	// Discard body to allow connection reuse
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		if retryAfter <= 0 {
+			retryAfter = 5 * time.Second
+		}
+		return &ErrRateLimited{
+			Server:     serverURL,
+			RetryAfter: retryAfter,
+		}
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("server returned non-success status: %d", resp.StatusCode)
 	}
 
 	return nil
+}
+
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+
+	if seconds, err := strconv.Atoi(header); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+
+	if t, err := http.ParseTime(header); err == nil {
+		delay := time.Until(t)
+		if delay < 0 {
+			return 0
+		}
+		return delay
+	}
+
+	return 0
 }
 
 // getRetryDelay returns an exponentially increasing delay with jitter:
