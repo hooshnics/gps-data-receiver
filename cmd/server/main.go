@@ -19,7 +19,6 @@ import (
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
-	"github.com/gps-data-receiver/internal/rawlog"
 	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/gps-data-receiver/internal/sender"
 	"github.com/gps-data-receiver/internal/storage"
@@ -95,14 +94,6 @@ func main() {
 	asyncBroadcaster := api.NewAsyncBroadcaster(io, 10000)
 	if asyncBroadcaster != nil {
 		defer asyncBroadcaster.Close()
-	}
-
-	rawLogger := rawlog.New(cfg.RawLog.Enabled, cfg.RawLog.BaseDir, cfg.RawLog.BufferSize)
-	if rawLogger != nil {
-		defer rawLogger.Close()
-		logger.Info("Raw data file logging enabled",
-			zap.String("base_dir", cfg.RawLog.BaseDir),
-			zap.Int("buffer_size", cfg.RawLog.BufferSize))
 	}
 
 	var postgresStore *storage.PostgresStore
@@ -216,8 +207,6 @@ func main() {
 				zap.Error(result.Error))
 			return result.Error
 		}
-
-		rawLogger.LogRecords(filteredData)
 
 		if postgresStore != nil {
 			storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
