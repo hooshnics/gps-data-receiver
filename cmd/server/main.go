@@ -73,6 +73,9 @@ func main() {
 	// Initialize HTTP sender
 	httpSender := sender.NewHTTPSender(cfg)
 	defer httpSender.Close()
+	logger.Info("Outgoing rate limit configured",
+		zap.Int("rps_per_destination", cfg.OutgoingRateLimit.RequestsPerSecond),
+		zap.Int("burst_per_destination", cfg.OutgoingRateLimit.BurstSize))
 
 	// Initialize stoppage filter
 	stoppageFilter := filter.NewStoppageFilter(
