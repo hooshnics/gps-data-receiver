@@ -1,8 +1,11 @@
 package parser
 
 import (
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -127,6 +130,63 @@ func TestParse_InvalidJSON(t *testing.T) {
 
 	_, err := Parse(data)
 	assert.Error(t, err, "Invalid JSON should return error")
+}
+
+func TestParse_BrokenJSONKeepsValidRecords(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantLen  int
+		wantIMEI string
+	}{
+		{
+			name:     "invalid record before valid GPS record",
+			input:    `[{"data":"invalid data ( Should be removed)"}{"data":"+Hooshnic:V1.06,3556.27680,05003.9190,000,260224,052019,000,000,0,3,1,861826074262144"}]`,
+			wantLen:  1,
+			wantIMEI: "861826074262144",
+		},
+		{
+			name:     "control characters in record before valid GPS record",
+			input:    `[{"data":"\x00broken\x7F"}{"data":"+Hooshnic:V1.06,3556.27680,05003.9190,000,260224,052019,000,000,0,3,1,861826074262144"}]`,
+			wantLen:  1,
+			wantIMEI: "861826074262144",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Parse([]byte(tt.input))
+			require.NoError(t, err)
+			require.Len(t, result, tt.wantLen)
+			assert.Equal(t, tt.wantIMEI, result[0].IMEI)
+		})
+	}
+}
+
+func TestParse_DataSamples(t *testing.T) {
+	raw, err := os.ReadFile("../../data-samples.txt")
+	require.NoError(t, err)
+
+	groups := strings.Split(string(raw), "------------------")
+	for i, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+
+		t.Run(string(rune('A'+i)), func(t *testing.T) {
+			sanitized := sanitizer.SanitizeUTF8([]byte(group))
+			result, err := Parse(sanitized)
+			require.NoError(t, err)
+
+			switch i {
+			case 0:
+				require.Len(t, result, 21)
+			case 1:
+				require.Len(t, result, 17)
+			}
+		})
+	}
 }
 
 func TestConvertNMEAToDecimalDegrees(t *testing.T) {
@@ -301,6 +361,15 @@ func TestDecodeJSONData_CleaningOperations(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, result, 1)
 				assert.Equal(t, "test", result[0].Data)
+			},
+		},
+		{
+			name:  "fallback extraction for broken JSON",
+			input: `[{"data":"\x00broken\x7F"}{"data":"valid"}]`,
+			validate: func(t *testing.T, result []DataItem, err error) {
+				require.NoError(t, err)
+				require.Len(t, result, 2)
+				assert.Equal(t, "valid", result[1].Data)
 			},
 		},
 	}

@@ -40,6 +40,11 @@ type DataItem struct {
 // Pattern: +Hooshnic:V{version},{lat},{lon},{field3},{date},{time},{speed},{field7},{status},{ew},{ns},{imei}
 var gpsDataPattern = regexp.MustCompile(`^\+[A-Za-z]+:[A-Za-z0-9.]+,\d{4}\.\d{5},\d{5}\.\d{4},\d{3},\d{6},\d{6},\d{3},\d{3},\d,\d,\d,\d{15}$`)
 
+var (
+	dataObjectStartPattern = regexp.MustCompile(`\{"data"\s*:\s*"`)
+	trailingCommaPattern   = regexp.MustCompile(`\},\s*\]`)
+)
+
 // Parse parses GPS data from JSON byte array into structured format
 func Parse(data []byte) ([]ParsedGPSData, error) {
 	if len(data) == 0 {
@@ -67,33 +72,99 @@ func Parse(data []byte) ([]ParsedGPSData, error) {
 	return processedData, nil
 }
 
-// decodeJSONData decodes and cleans the JSON data
-func decodeJSONData(jsonData string) ([]DataItem, error) {
-	// Clean JSON artifacts found in sample data
+// preprocessJSON applies common cleanup for device payload artifacts.
+func preprocessJSON(jsonData string) string {
 	trimmedData := strings.TrimRight(jsonData, ".")
-
-	// Fix missing commas between objects: }{ -> },{
 	trimmedData = strings.ReplaceAll(trimmedData, "}{", "},{")
-
-	// Remove empty objects: ,{} -> ""
 	trimmedData = strings.ReplaceAll(trimmedData, ",{}", "")
+	trimmedData = trailingCommaPattern.ReplaceAllString(trimmedData, "}]")
+	return strings.TrimRight(trimmedData, ",")
+}
 
-	// Remove trailing commas before closing brackets: },] -> }]
-	trimmedData = regexp.MustCompile(`\},\s*\]`).ReplaceAllString(trimmedData, "}]")
+// decodeJSONData decodes and cleans the JSON data.
+// When the full array cannot be decoded, individual {"data":"..."} objects are
+// extracted so only malformed records are dropped instead of the entire group.
+func decodeJSONData(jsonData string) ([]DataItem, error) {
+	trimmedData := preprocessJSON(jsonData)
 
-	// Remove trailing commas
-	trimmedData = strings.TrimRight(trimmedData, ",")
-
-	// Decode JSON using faster go-json library
 	var decodedData []DataItem
 	if err := gojson.Unmarshal([]byte(trimmedData), &decodedData); err != nil {
-		logger.Debug("Failed to decode JSON",
+		logger.Debug("Bulk JSON decode failed, extracting individual records",
 			zap.Error(err),
 			zap.String("cleaned_data", trimmedData))
-		return nil, fmt.Errorf("invalid JSON format: %w", err)
+
+		decodedData = extractDataItems(trimmedData)
+		if len(decodedData) == 0 {
+			return nil, fmt.Errorf("invalid JSON format: %w", err)
+		}
 	}
 
 	return decodedData, nil
+}
+
+// extractDataItems recovers data records from malformed JSON arrays.
+func extractDataItems(jsonData string) []DataItem {
+	matches := dataObjectStartPattern.FindAllStringIndex(jsonData, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	items := make([]DataItem, 0, len(matches))
+	for _, match := range matches {
+		valueStart := match[1]
+		data, nextIdx := readJSONStringValue(jsonData, valueStart)
+		if nextIdx == -1 {
+			continue
+		}
+
+		if data != "" {
+			items = append(items, DataItem{Data: data})
+		}
+	}
+
+	return items
+}
+
+// readJSONStringValue reads a JSON string value and returns the decoded content
+// along with the index after the closing "}.
+func readJSONStringValue(raw string, start int) (string, int) {
+	var data strings.Builder
+
+	for i := start; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			if i+1 >= len(raw) {
+				return "", -1
+			}
+			switch raw[i+1] {
+			case '"', '\\', '/':
+				data.WriteByte(raw[i+1])
+			case 'b':
+				data.WriteByte('\b')
+			case 'f':
+				data.WriteByte('\f')
+			case 'n':
+				data.WriteByte('\n')
+			case 'r':
+				data.WriteByte('\r')
+			case 't':
+				data.WriteByte('\t')
+			default:
+				// Keep unknown escapes as-is; GPS payloads rarely use them.
+				data.WriteByte(raw[i+1])
+			}
+			i++
+		case '"':
+			if i+1 < len(raw) && raw[i+1] == '}' {
+				return data.String(), i + 2
+			}
+			return "", -1
+		default:
+			data.WriteByte(raw[i])
+		}
+	}
+
+	return "", -1
 }
 
 // processDataItems processes multiple data items
