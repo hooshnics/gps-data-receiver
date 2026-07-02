@@ -1,33 +1,5 @@
 <template>
   <main class="mx-auto max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
-      <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <form class="flex flex-wrap items-center gap-2" dir="ltr" @submit.prevent="applyImeiFilter">
-          <button
-            type="submit"
-            class="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!imeiInput.trim()"
-          >
-            فیلتر
-          </button>
-          <input
-            v-model="imeiInput"
-            type="text"
-            inputmode="numeric"
-            maxlength="15"
-            pattern="\d{15}"
-            placeholder="867994064030931"
-            class="w-48 rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-            :class="{ 'border-red-400 focus:border-red-500 focus:ring-red-500': imeiFilterError }"
-          />
-        </form>
-        <div v-if="activeImeiFilter" class="text-sm text-slate-600">
-          فیلتر IMEI:
-          <span class="font-mono font-medium text-slate-800">{{ activeImeiFilter }}</span>
-        </div>
-      </div>
-      <div v-if="imeiFilterError" class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-        {{ imeiFilterError }}
-      </div>
       <div v-if="error" class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         {{ error }}
       </div>
@@ -36,8 +8,8 @@
         <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
-              داده‌های ارسال‌شده به سرورها
-              <span class="ml-2 font-normal text-slate-500">({{ displayedDeliveredRows.length }} از ۱۵ رکورد)</span>
+              Data Delivered to Servers
+              <span class="ml-2 font-normal text-slate-500">({{ displayedDeliveredRows.length }} of 15 records)</span>
             </h2>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
@@ -46,12 +18,12 @@
                 <thead class="bg-slate-50 sticky top-0 z-10">
                   <tr>
                     <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">IMEI</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">مختصات</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">سرعت</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">وضعیت</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">جهت</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">تاریخ</th>
-                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">زمان</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Coordinates</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Speed</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Status</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Direction</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Date</th>
+                    <th class="px-4 py-2 text-xs font-medium text-slate-600 text-center">Time</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100 bg-white">
@@ -82,21 +54,21 @@
               </table>
             </div>
             <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
-              هنوز داده‌ای به سرورها ارسال نشده است
+              No data has been delivered to servers yet
             </div>
           </div>
         </div>
-        <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div class="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
             <h2 class="text-lg font-semibold text-slate-800">
-              داده‌های دریافتی
-              <span class="ml-2 font-normal text-slate-500">({{ displayedPackets.length }} از ۱۵ مورد)</span>
+              Received Data
+              <span class="ml-2 font-normal text-slate-500">({{ displayedPackets.length }} of 15 items)</span>
             </h2>
           </div>
           <div class="max-h-[70vh] overflow-y-auto">
             <ul v-if="displayedPackets.length" class="divide-y divide-slate-200">
               <li v-for="(pkt, index) in displayedPackets" :key="pkt.message_id + '-' + index"
-                class="px-4 py-3 sm:px-6 hover:bg-slate-50/50">
+                class="min-w-0 px-4 py-3 sm:px-6 hover:bg-slate-50/50">
                 <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <span class="font-mono text-sm font-medium text-slate-700">
                     {{ pkt.message_id }}
@@ -109,11 +81,12 @@
                   </span>
                 </div>
                 <pre
-                  class="mt-2 overflow-x-auto rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700">{{ payloadPreview(displayPayload(pkt)) }}</pre>
+                  class="mt-2 max-w-full whitespace-pre-wrap break-all rounded bg-slate-100 px-2 py-1.5 font-mono text-xs text-slate-700"
+                >{{ normalizePayload(pkt.payload) }}</pre>
               </li>
             </ul>
             <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
-              هنوز داده‌ای دریافت نشده است
+              No data received yet
             </div>
           </div>
         </div>
@@ -122,44 +95,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useGpsPackets } from '../composables/useGpsPackets'
 
 const { packets, deliveredPackets, error } = useGpsPackets()
-
-const imeiInput = ref('')
-const activeImeiFilter = ref(/** @type {string|null} */ (null))
-const imeiFilterError = ref(/** @type {string|null} */ (null))
-
-const IMEI_FILTER_PATTERN = /^\d{15}$/
-
-function applyImeiFilter() {
-  const value = imeiInput.value.trim()
-  if (!value) {
-    activeImeiFilter.value = null
-    imeiFilterError.value = null
-    return
-  }
-  if (!IMEI_FILTER_PATTERN.test(value)) {
-    imeiFilterError.value = 'IMEI باید دقیقاً ۱۵ رقم باشد.'
-    return
-  }
-  activeImeiFilter.value = value
-  imeiFilterError.value = null
-}
-
-function imeiMatches(recordImei, filterImei) {
-  if (!recordImei || !filterImei) return false
-  return String(recordImei) === filterImei
-}
-
-function extractImeisFromHooshnic(dataStr) {
-  if (typeof dataStr !== 'string' || !dataStr) return []
-  const lastComma = dataStr.lastIndexOf(',')
-  if (lastComma === -1) return []
-  const imei = dataStr.slice(lastComma + 1).trim()
-  return imei ? [imei] : []
-}
 
 function normalizePayload(payload) {
   if (payload == null) return ''
@@ -171,87 +110,7 @@ function normalizePayload(payload) {
   }
 }
 
-function collectPayloadItems(parsed) {
-  if (Array.isArray(parsed)) return parsed
-  if (parsed && typeof parsed === 'object') {
-    if (Array.isArray(parsed.data)) return parsed.data
-    if (typeof parsed.data === 'string') return [{ data: parsed.data }]
-    if (parsed.data && typeof parsed.data === 'object') return [parsed.data]
-    return [parsed]
-  }
-  return []
-}
-
-function itemImeis(item) {
-  if (!item || typeof item !== 'object') {
-    if (typeof item === 'string') return extractImeisFromHooshnic(item)
-    return []
-  }
-  if (item.imei) return [String(item.imei)]
-  const raw = item.data ?? item
-  if (typeof raw === 'string') return extractImeisFromHooshnic(raw)
-  return []
-}
-
-function extractImeisFromPayload(payload) {
-  const text = normalizePayload(payload)
-  if (!text) return []
-  const imeis = new Set()
-
-  try {
-    let parsed = JSON.parse(text)
-    if (typeof parsed === 'string') {
-      parsed = JSON.parse(parsed)
-    }
-    for (const item of collectPayloadItems(parsed)) {
-      for (const imei of itemImeis(item)) {
-        imeis.add(imei)
-      }
-    }
-  } catch {
-    // fall through to text scan
-  }
-
-  if (imeis.size === 0) {
-    for (const match of text.matchAll(/\d{15}/g)) {
-      imeis.add(match[0])
-    }
-  }
-
-  return [...imeis]
-}
-
-function payloadMatchesImeiFilter(payload, filterImei) {
-  if (!filterImei) return true
-  const text = normalizePayload(payload)
-  return extractImeisFromPayload(text).some((imei) => imeiMatches(imei, filterImei))
-    || text.includes(filterImei)
-}
-
-function filterPayloadForImei(payload, filterImei) {
-  const text = normalizePayload(payload)
-  if (!filterImei || !text) return text
-
-  try {
-    let parsed = JSON.parse(text)
-    if (typeof parsed === 'string') {
-      parsed = JSON.parse(parsed)
-    }
-    const items = collectPayloadItems(parsed)
-    const filtered = items.filter((item) =>
-      itemImeis(item).some((imei) => imeiMatches(imei, filterImei)),
-    )
-    if (Array.isArray(parsed)) return JSON.stringify(filtered, null, 2)
-    if (parsed && typeof parsed === 'object' && 'data' in parsed) {
-      return JSON.stringify({ ...parsed, data: filtered }, null, 2)
-    }
-    return JSON.stringify(filtered, null, 2)
-  } catch {
-    return text.includes(filterImei) ? text : ''
-  }
-}
-
-const persianDateFormatter = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -261,23 +120,10 @@ function formatTime(iso) {
   if (!iso) return '—'
   try {
     const d = new Date(iso)
-    return d.toLocaleString('fa-IR')
+    return d.toLocaleString('en-US')
   } catch {
     return iso
   }
-}
-
-function payloadPreview(payload, maxLen = 320) {
-  const text = normalizePayload(payload)
-  if (!text) return ''
-  if (text.length <= maxLen) return text
-  return text.slice(0, maxLen) + '…'
-}
-
-function displayPayload(pkt) {
-  const filter = activeImeiFilter.value
-  if (!filter) return pkt.payload
-  return filterPayloadForImei(pkt.payload, filter)
 }
 
 function extractRecordsFromPayload(payload) {
@@ -298,7 +144,7 @@ function formatDirections(directions) {
   return `${ns}${ew}`
 }
 
-function formatJalaliFromDateTime(value) {
+function formatDateFromDateTime(value) {
   if (!value) return '—'
   try {
     let d
@@ -313,7 +159,7 @@ function formatJalaliFromDateTime(value) {
       d = new Date(value)
     }
     if (Number.isNaN(d.getTime())) return value
-    return persianDateFormatter.format(d)
+    return dateFormatter.format(d)
   } catch {
     return value
   }
@@ -325,7 +171,7 @@ function formatTimeFromDateTime(value) {
     if (value.includes('T')) {
       try {
         const d = new Date(value)
-        return d.toLocaleTimeString('fa-IR', {
+        return d.toLocaleTimeString('en-US', {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
@@ -340,7 +186,7 @@ function formatTimeFromDateTime(value) {
   }
   try {
     const d = new Date(value)
-    return d.toLocaleTimeString('fa-IR', {
+    return d.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -370,7 +216,7 @@ const deliveredRows = computed(() => {
         speed: rec.speed ?? '',
         status: rec.status ?? '',
         directions: formatDirections(rec.directions),
-        date: formatJalaliFromDateTime(dateTime),
+        date: formatDateFromDateTime(dateTime),
         time: formatTimeFromDateTime(dateTime),
       })
     }
@@ -378,19 +224,7 @@ const deliveredRows = computed(() => {
   return rows
 })
 
-const displayedDeliveredRows = computed(() => {
-  const filter = activeImeiFilter.value
-  const rows = filter
-    ? deliveredRows.value.filter((row) => imeiMatches(row.imei, filter))
-    : deliveredRows.value
-  return rows.slice(0, 15)
-})
+const displayedDeliveredRows = computed(() => deliveredRows.value.slice(0, 15))
 
-const displayedPackets = computed(() => {
-  const filter = activeImeiFilter.value
-  const list = filter
-    ? packets.value.filter((pkt) => payloadMatchesImeiFilter(pkt.payload, filter))
-    : packets.value
-  return list.slice(0, 15)
-})
+const displayedPackets = computed(() => packets.value.slice(0, 15))
 </script>
