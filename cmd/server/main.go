@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	gojson "github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/internal/filter"
@@ -197,19 +198,45 @@ func main() {
 		}
 
 		// 6. Send filtered data to destination servers
-		result := httpSender.Send(ctx, jsonData)
+		deliveryID := uuid.New().String()
+		emitDelivery := func(status, targetServer string) {
+			if asyncBroadcaster == nil {
+				return
+			}
+			asyncBroadcaster.Emit("gps-delivery", map[string]interface{}{
+				"delivery_id":   deliveryID,
+				"status":        status,
+				"target_server": targetServer,
+				"payload":       string(jsonData),
+				"payload_size":  len(jsonData),
+				"record_count":  len(filteredData),
+				"updated_at":    time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+
+		emitDelivery("sending", "")
+
+		sendObserver := sender.FuncSendObserver{
+			OnAttemptFunc: func(server string, attempt int) {
+				emitDelivery("sending", server)
+			},
+		}
+		result := httpSender.Send(ctx, jsonData, sendObserver)
 
 		if metrics.AppMetrics != nil {
 			metrics.AppMetrics.RecordQueueProcessing(time.Since(start))
 		}
 
 		if !result.Success {
+			emitDelivery("failed", result.TargetServer)
 			logger.Warn("Send failed, message will be retried via queue redelivery",
 				zap.String("target_server", result.TargetServer),
 				zap.Int("attempts", result.Attempt),
 				zap.Error(result.Error))
 			return result.Error
 		}
+
+		emitDelivery("delivered", result.TargetServer)
 
 		if postgresStore != nil {
 			storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -218,18 +245,6 @@ func main() {
 					zap.Error(err))
 			}
 			storeCancel()
-		}
-
-		// Broadcast delivered packet to frontend (async, non-blocking)
-		if asyncBroadcaster != nil {
-			payload := map[string]interface{}{
-				"delivered_at":  time.Now().UTC().Format(time.RFC3339),
-				"target_server": result.TargetServer,
-				"payload":       string(jsonData),
-				"payload_size":  len(jsonData),
-				"record_count":  len(parsed),
-			}
-			asyncBroadcaster.Emit("gps-delivered", payload)
 		}
 
 		return nil
