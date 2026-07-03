@@ -1,4 +1,4 @@
-import * as jalaali from 'jalaali-js'
+import { toGregorian, toJalaali, isLeapJalaaliYear, jalaaliMonthLength } from 'jalaali-js'
 
 export const PERSIAN_MONTHS = [
   'فروردین',
@@ -41,20 +41,23 @@ export function todayGregorianISO() {
 export function gregorianISOToJalali(isoDate) {
   if (!isoDate) return null
   const [gy, gm, gd] = isoDate.split('-').map(Number)
-  if (!gy || !gm || !gd) return null
-  const { jy, jm, jd } = jalaali.toJalaali(gy, gm, gd)
-  return { year: jy, month: jm, day: jd }
+  if (!Number.isFinite(gy) || !Number.isFinite(gm) || !Number.isFinite(gd)) return null
+  try {
+    const { jy, jm, jd } = toJalaali(gy, gm, gd)
+    return { year: jy, month: jm, day: jd }
+  } catch {
+    return null
+  }
 }
 
 export function jalaliToGregorianISO(year, month, day) {
-  const { gy, gm, gd } = jalaali.toGregorian(year, month, day)
+  const { gy, gm, gd } = toGregorian(year, month, day)
   return `${gy}-${String(gm).padStart(2, '0')}-${String(gd).padStart(2, '0')}`
 }
 
 export function jalaliDaysInMonth(year, month) {
-  if (month <= 6) return 31
-  if (month <= 11) return 30
-  return jalaali.isLeapJalaaliYear(year) ? 30 : 29
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return 31
+  return jalaaliMonthLength(year, month)
 }
 
 export function formatPersianDate(value) {
