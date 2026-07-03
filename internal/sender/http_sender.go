@@ -111,9 +111,33 @@ type SendResult struct {
 	Error        error
 }
 
+// SendObserver receives notifications during a send operation.
+type SendObserver interface {
+	OnAttempt(server string, attempt int)
+}
+
+// FuncSendObserver implements SendObserver with optional callbacks.
+type FuncSendObserver struct {
+	OnAttemptFunc func(server string, attempt int)
+}
+
+func (f FuncSendObserver) OnAttempt(server string, attempt int) {
+	if f.OnAttemptFunc != nil {
+		f.OnAttemptFunc(server, attempt)
+	}
+}
+
+func notifyAttempt(observers []SendObserver, server string, attempt int) {
+	for _, observer := range observers {
+		if observer != nil {
+			observer.OnAttempt(server, attempt)
+		}
+	}
+}
+
 // Send sends data to destination servers with retry logic and exponential backoff.
 // Each retry rotates to the next server so a single unhealthy host doesn't block the worker.
-func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
+func (s *HTTPSender) Send(ctx context.Context, data []byte, observers ...SendObserver) *SendResult {
 	serverCount := s.loadBalancer.ServerCount()
 	if serverCount == 0 {
 		return &SendResult{
@@ -141,6 +165,7 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte) *SendResult {
 		}
 
 		lastServer = targetServer
+		notifyAttempt(observers, targetServer, attempt)
 
 		sendStart := time.Now()
 		err := s.sendToServer(ctx, targetServer, data)

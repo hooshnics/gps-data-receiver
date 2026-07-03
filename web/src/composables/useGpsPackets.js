@@ -13,26 +13,33 @@ const DEBUG = import.meta.env.DEV
  */
 
 /**
- * @typedef {Object} DeliveredPacket
- * @property {string} delivered_at
- * @property {string} target_server
- * @property {string} payload
- * @property {number} payload_size
+ * @typedef {'sending' | 'delivered' | 'failed'} DeliveryStatus
  */
 
 /**
- * Composable for real-time GPS packet streams via Socket.IO (received + delivered).
- * @returns {{ packets: import('vue').Ref<GpsPacket[]>, deliveredPackets: import('vue').Ref<DeliveredPacket[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearPackets: () => void, clearDeliveredPackets: () => void }}
+ * @typedef {Object} DeliveryBatch
+ * @property {string} delivery_id
+ * @property {DeliveryStatus} status
+ * @property {string} target_server
+ * @property {string} payload
+ * @property {number} payload_size
+ * @property {number} record_count
+ * @property {string} updated_at
+ */
+
+/**
+ * Composable for real-time GPS packet streams via Socket.IO (received + delivery status).
+ * @returns {{ packets: import('vue').Ref<GpsPacket[]>, deliveryBatches: import('vue').Ref<DeliveryBatch[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearPackets: () => void, clearDeliveryBatches: () => void }}
  */
 export function useGpsPackets() {
   const packets = ref(/** @type {GpsPacket[]} */ ([]))
-  const deliveredPackets = ref(/** @type {DeliveredPacket[]} */ ([]))
+  const deliveryBatches = ref(/** @type {DeliveryBatch[]} */ ([]))
 
   function clearPackets() {
     packets.value = []
   }
-  function clearDeliveredPackets() {
-    deliveredPackets.value = []
+  function clearDeliveryBatches() {
+    deliveryBatches.value = []
   }
   const connected = ref(false)
   const error = ref(/** @type {string|null} */ (null))
@@ -41,11 +48,31 @@ export function useGpsPackets() {
   /** @type {ReturnType<typeof io> | null} */
   let socket = null
 
+  function upsertDeliveryBatch(data) {
+    const batch = {
+      delivery_id: data.delivery_id ?? '',
+      status: data.status ?? 'sending',
+      target_server: data.target_server ?? '',
+      payload: data.payload ?? '',
+      payload_size: typeof data.payload_size === 'number' ? data.payload_size : 0,
+      record_count: typeof data.record_count === 'number' ? data.record_count : 0,
+      updated_at: data.updated_at ?? new Date().toISOString(),
+    }
+
+    const index = deliveryBatches.value.findIndex((b) => b.delivery_id === batch.delivery_id)
+    if (index >= 0) {
+      const next = [...deliveryBatches.value]
+      next[index] = { ...next[index], ...batch }
+      deliveryBatches.value = next
+    } else {
+      deliveryBatches.value = [batch, ...deliveryBatches.value].slice(0, MAX_PACKETS)
+    }
+  }
+
   onMounted(() => {
     if (DEBUG) {
       console.log('[Socket.IO] Connecting to path: /socket.io/')
     }
-    // Go server (ismhdez/socket.io-golang) supports WebSocket only, not polling
     socket = io({
       path: '/socket.io/',
       transports: ['websocket'],
@@ -106,20 +133,30 @@ export function useGpsPackets() {
       }
     })
 
+    socket.on('gps-delivery', (data) => {
+      if (DEBUG) {
+        console.log('[Socket.IO] gps-delivery received', data)
+      }
+      if (data && typeof data === 'object') {
+        upsertDeliveryBatch(data)
+      }
+    })
+
+    // Backward compatibility with older server events
     socket.on('gps-delivered', (data) => {
       if (DEBUG) {
         console.log('[Socket.IO] gps-delivered received', data)
       }
       if (data && typeof data === 'object') {
-        deliveredPackets.value = [
-          {
-            delivered_at: data.delivered_at ?? new Date().toISOString(),
-            target_server: data.target_server ?? '',
-            payload: data.payload ?? '',
-            payload_size: typeof data.payload_size === 'number' ? data.payload_size : 0,
-          },
-          ...deliveredPackets.value,
-        ].slice(0, MAX_PACKETS)
+        upsertDeliveryBatch({
+          delivery_id: `${data.delivered_at ?? Date.now()}-${data.target_server ?? ''}`,
+          status: 'delivered',
+          target_server: data.target_server ?? '',
+          payload: data.payload ?? '',
+          payload_size: data.payload_size,
+          record_count: data.record_count,
+          updated_at: data.delivered_at ?? new Date().toISOString(),
+        })
       }
     })
   })
@@ -131,5 +168,13 @@ export function useGpsPackets() {
     }
   })
 
-  return { packets, deliveredPackets, connected, error, socketId, clearPackets, clearDeliveredPackets }
+  return {
+    packets,
+    deliveryBatches,
+    connected,
+    error,
+    socketId,
+    clearPackets,
+    clearDeliveryBatches,
+  }
 }
