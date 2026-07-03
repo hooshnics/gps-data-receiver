@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"sync/atomic"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/metrics"
@@ -86,7 +85,6 @@ func (ab *AsyncBroadcaster) Close() {
 type Handler struct {
 	queue             *queue.RedisQueue
 	backpressureLimit int64
-	broadcast         BroadcastEmitter
 	store             *storage.PostgresStore
 
 	// Cached depth so we don't need a separate XLEN call on every request;
@@ -95,12 +93,10 @@ type Handler struct {
 }
 
 // NewHandler creates a new handler. backpressureLimit is the queue depth at which to return 503 (0 = 90% of Redis MaxLen).
-// broadcast is optional; when non-nil, received GPS packets are broadcast (e.g. for real-time frontend).
-func NewHandler(q *queue.RedisQueue, backpressureLimit int64, broadcast BroadcastEmitter, store *storage.PostgresStore) *Handler {
+func NewHandler(q *queue.RedisQueue, backpressureLimit int64, store *storage.PostgresStore) *Handler {
 	h := &Handler{
 		queue:             q,
 		backpressureLimit: backpressureLimit,
-		broadcast:         broadcast,
 		store:             store,
 	}
 	return h
@@ -176,18 +172,6 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 	logger.Debug("GPS data received and queued",
 		zap.String("message_id", messageID),
 		zap.Int("payload_size", len(body)))
-
-	if h.broadcast != nil {
-		payload := map[string]interface{}{
-			"message_id":   messageID,
-			"received_at":  time.Now().UTC().Format(time.RFC3339),
-			"payload":      string(body),
-			"payload_size": len(body),
-		}
-		if err := h.broadcast.Emit("gps-packet", payload); err != nil {
-			logger.Debug("Broadcast gps-packet failed", zap.Error(err))
-		}
-	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "queued",
