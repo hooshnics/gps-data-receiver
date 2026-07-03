@@ -6,7 +6,7 @@
 
       <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
         <div class="max-h-[70vh] overflow-y-auto">
-          <div v-if="displayedDeliveredRows.length" class="overflow-x-auto">
+          <div v-if="displayedDeliveredRows.length > 0" class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 text-sm">
               <thead class="bg-slate-50 sticky top-0 z-10">
                 <tr>
@@ -187,7 +187,8 @@ function deliveryLabelClass(status) {
 
 const deliveredRows = computed(() => {
   const rows = []
-  for (const batch of deliveryBatches.value) {
+  const batches = deliveryBatches.value ?? []
+  for (const batch of batches) {
     const records = extractRecordsFromPayload(batch.payload)
     for (let i = 0; i < records.length; i += 1) {
       const rec = records[i] || {}
@@ -215,4 +216,6 @@ const deliveredRows = computed(() => {
   }
   return rows
 })
+
+const displayedDeliveredRows = computed(() => deliveredRows.value.slice(0, 15))
 </script>

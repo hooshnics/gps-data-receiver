@@ -14,7 +14,7 @@
       class="min-w-[7rem] flex-1 rounded-md border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
       @change="onMonthChange"
     >
-      <option v-for="(name, index) in PERSIAN_MONTHS" :key="name" :value="index + 1">
+      <option v-for="(name, index) in persianMonths" :key="name" :value="index + 1">
         {{ name }}
       </option>
     </select>
@@ -30,7 +30,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   PERSIAN_MONTHS,
   gregorianISOToJalali,
@@ -52,9 +52,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue'])
 
-const currentGregorianYear = new Date().getFullYear()
-const baseJalali = gregorianISOToJalali(`${currentGregorianYear}-01-01`)
-const yearOptions = Array.from({ length: 11 }, (_, i) => (baseJalali?.year || 1404) - 5 + i)
+const persianMonths = PERSIAN_MONTHS
 
 function initJalaliFromGregorian(iso) {
   const jalali = gregorianISOToJalali(iso || todayGregorianISO())
@@ -66,17 +64,29 @@ const jalaliYear = ref(initial.year)
 const jalaliMonth = ref(initial.month)
 const jalaliDay = ref(initial.day)
 
+const yearOptions = computed(() => {
+  const center = jalaliYear.value || initial.year
+  return Array.from({ length: 11 }, (_, i) => center - 5 + i)
+})
+
 const dayOptions = computed(() => {
   const count = jalaliDaysInMonth(jalaliYear.value, jalaliMonth.value)
-  return Array.from({ length: count }, (_, i) => i + 1)
+  const safeCount = Number.isFinite(count) && count > 0 ? count : 31
+  return Array.from({ length: safeCount }, (_, i) => i + 1)
 })
 
 function emitGregorian() {
-  const maxDay = jalaliDaysInMonth(jalaliYear.value, jalaliMonth.value)
-  if (jalaliDay.value > maxDay) {
+  const year = jalaliYear.value || initial.year
+  const month = jalaliMonth.value || initial.month
+  let day = jalaliDay.value || initial.day
+
+  const maxDay = jalaliDaysInMonth(year, month)
+  if (day > maxDay) {
+    day = maxDay
     jalaliDay.value = maxDay
   }
-  emit('update:modelValue', jalaliToGregorianISO(jalaliYear.value, jalaliMonth.value, jalaliDay.value))
+
+  emit('update:modelValue', jalaliToGregorianISO(year, month, day))
 }
 
 function onMonthChange() {
@@ -99,7 +109,9 @@ watch(
   },
 )
 
-if (!props.modelValue) {
-  emitGregorian()
-}
+onMounted(() => {
+  if (!props.modelValue) {
+    emitGregorian()
+  }
+})
 </script>
