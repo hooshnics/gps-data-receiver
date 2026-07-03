@@ -229,6 +229,18 @@ func main() {
 
 		if !result.Success {
 			emitDelivery("failed", result.TargetServer)
+			if postgresStore != nil {
+				errMsg := ""
+				if result.Error != nil {
+					errMsg = result.Error.Error()
+				}
+				storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := postgresStore.StoreFailedRecords(storeCtx, filteredData, result.TargetServer, errMsg); err != nil {
+					logger.Warn("Failed to store failed GPS records in PostgreSQL",
+						zap.Error(err))
+				}
+				storeCancel()
+			}
 			logger.Warn("Send failed, message will be retried via queue redelivery",
 				zap.String("target_server", result.TargetServer),
 				zap.Int("attempts", result.Attempt),
@@ -307,6 +319,7 @@ func main() {
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	router.GET("/api/gps/records", handler.QueryGPSRecords)
+	router.GET("/api/gps/failed-records", handler.QueryFailedGPSRecords)
 	router.GET("/health", handler.Health)
 	router.HEAD("/health", handler.Health)
 	router.GET("/ready", handler.Ready)

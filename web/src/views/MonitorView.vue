@@ -5,12 +5,6 @@
       </div>
 
       <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 sm:px-6">
-          <h2 class="text-lg font-semibold text-slate-800">
-            Data Delivered to Servers
-            <span class="ml-2 font-normal text-slate-500">({{ displayedDeliveredRows.length }} of 15 records)</span>
-          </h2>
-        </div>
         <div class="max-h-[70vh] overflow-y-auto">
           <div v-if="displayedDeliveredRows.length" class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 text-sm">
@@ -102,14 +96,10 @@
 <script setup>
 import { computed } from 'vue'
 import { useGpsPackets } from '../composables/useGpsPackets'
+import { formatStatus } from '../utils/gpsRecords'
+import { formatPersianDate } from '../utils/persianDate'
 
 const { deliveryBatches, error } = useGpsPackets()
-
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-})
 
 function extractRecordsFromPayload(payload) {
   if (!payload || typeof payload !== 'string') return []
@@ -122,7 +112,7 @@ function extractRecordsFromPayload(payload) {
   }
 }
 
-function formatDirections(directions) {
+function formatDirectionsValue(directions) {
   if (!directions || typeof directions !== 'object') return ''
   const ew = directions.ew === 1 ? 'W' : 'E'
   const ns = directions.ns === 1 ? 'S' : 'N'
@@ -130,24 +120,7 @@ function formatDirections(directions) {
 }
 
 function formatDateFromDateTime(value) {
-  if (!value) return '—'
-  try {
-    let d
-    if (typeof value === 'string') {
-      if (value.includes('T')) {
-        d = new Date(value)
-      } else {
-        const [datePart, timePart = '00:00:00'] = value.split(' ')
-        d = new Date(`${datePart}T${timePart}`)
-      }
-    } else {
-      d = new Date(value)
-    }
-    if (Number.isNaN(d.getTime())) return value
-    return dateFormatter.format(d)
-  } catch {
-    return value
-  }
+  return formatPersianDate(value)
 }
 
 function formatTimeFromDateTime(value) {
@@ -230,8 +203,8 @@ const deliveredRows = computed(() => {
         imei: rec.imei || '',
         coordinate: coord,
         speed: rec.speed ?? '',
-        status: rec.status ?? '',
-        directions: formatDirections(rec.directions),
+        status: formatStatus(rec.status),
+        directions: formatDirectionsValue(rec.directions),
         date: formatDateFromDateTime(dateTime),
         time: formatTimeFromDateTime(dateTime),
         deliveryStatus: batch.status,
@@ -242,6 +215,4 @@ const deliveredRows = computed(() => {
   }
   return rows
 })
-
-const displayedDeliveredRows = computed(() => deliveredRows.value.slice(0, 15))
 </script>
