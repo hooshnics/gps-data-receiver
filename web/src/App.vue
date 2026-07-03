@@ -16,7 +16,14 @@
             class="rounded-md px-4 py-2 text-sm font-medium transition"
             :class="route.path === '/analysis' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
           >
-            Analysis
+            Delivered
+          </RouterLink>
+          <RouterLink
+            to="/failed"
+            class="rounded-md px-4 py-2 text-sm font-medium transition"
+            :class="route.path === '/failed' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+          >
+            Failed
           </RouterLink>
         </nav>
       </div>

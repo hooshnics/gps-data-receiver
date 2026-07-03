@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,20 +10,8 @@ import (
 	"go.uber.org/zap"
 )
 
-var imeiQueryPattern = regexp.MustCompile(`^\d{15}$`)
-
-var tehranLocation *time.Location
-
-func init() {
-	loc, err := time.LoadLocation("Asia/Tehran")
-	if err != nil {
-		loc = time.FixedZone("IRST", 3*3600+30*60)
-	}
-	tehranLocation = loc
-}
-
-// QueryGPSRecords handles GET /api/gps/records
-func (h *Handler) QueryGPSRecords(c *gin.Context) {
+// QueryFailedGPSRecords handles GET /api/gps/failed-records
+func (h *Handler) QueryFailedGPSRecords(c *gin.Context) {
 	if h.store == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database storage is not enabled"})
 		return
@@ -55,10 +42,10 @@ func (h *Handler) QueryGPSRecords(c *gin.Context) {
 		Limit:     5000,
 	}
 
-	records, err := h.store.QueryRecords(c.Request.Context(), filter)
+	records, err := h.store.QueryFailedRecords(c.Request.Context(), filter)
 	if err != nil {
-		logger.Error("Failed to query GPS records", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query records"})
+		logger.Error("Failed to query failed GPS records", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query failed records"})
 		return
 	}
 
@@ -68,8 +55,4 @@ func (h *Handler) QueryGPSRecords(c *gin.Context) {
 		"date":    dateStr,
 		"imei":    imei,
 	})
-}
-
-func parseQueryDate(dateStr string) (time.Time, error) {
-	return time.ParseInLocation("2006-01-02", dateStr, tehranLocation)
 }

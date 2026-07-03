@@ -7,9 +7,9 @@
           <PersianDateInput :id="dateInputId" v-model="selectedDate" />
         </div>
         <div class="min-w-[200px]">
-          <label for="analysis-imei" class="mb-1.5 block text-sm font-medium text-slate-700">IMEI</label>
+          <label for="failed-imei" class="mb-1.5 block text-sm font-medium text-slate-700">IMEI</label>
           <input
-            id="analysis-imei"
+            id="failed-imei"
             v-model="imeiInput"
             type="text"
             inputmode="numeric"
@@ -30,26 +30,6 @@
       </form>
 
       <div class="mt-5 flex flex-wrap items-center justify-between gap-4">
-        <div
-          class="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1"
-          role="tablist"
-          aria-label="نوع نمایش داده"
-        >
-          <label
-            class="cursor-pointer rounded-md px-4 py-2 text-sm font-medium transition"
-            :class="viewMode === 'parsed' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
-          >
-            <input v-model="viewMode" type="radio" value="parsed" class="sr-only" />
-            داده پارس‌شده
-          </label>
-          <label
-            class="cursor-pointer rounded-md px-4 py-2 text-sm font-medium transition"
-            :class="viewMode === 'raw' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
-          >
-            <input v-model="viewMode" type="radio" value="raw" class="sr-only" />
-            داده خام
-          </label>
-        </div>
         <p v-if="resultCount !== null" class="text-sm text-slate-600">
           {{ resultCount }} رکورد یافت شد
         </p>
@@ -63,9 +43,9 @@
       {{ queryError }}
     </div>
 
-    <div v-if="viewMode === 'parsed'" class="rounded-lg border border-slate-200 bg-white shadow-sm">
+    <div class="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div class="border-b border-slate-200 px-4 py-3 sm:px-6">
-        <h2 class="text-lg font-semibold text-slate-800">تحویل‌های موفق</h2>
+        <h2 class="text-lg font-semibold text-slate-800">تحویل‌های ناموفق</h2>
       </div>
       <div class="max-h-[70vh] overflow-auto">
         <table v-if="parsedRows.length" class="min-w-full divide-y divide-slate-200 text-sm">
@@ -78,7 +58,9 @@
               <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">سرعت</th>
               <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">وضعیت</th>
               <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">تاریخ دستگاه</th>
-              <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">زمان ذخیره</th>
+              <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">سرور مقصد</th>
+              <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">خطا</th>
+              <th class="px-3 py-2 text-center text-xs font-medium text-slate-600">زمان خطا</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100 bg-white">
@@ -90,7 +72,11 @@
               <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-800">{{ row.speed }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-800">{{ row.statusLabel }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-800">{{ row.deviceDateTime }}</td>
-              <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-800">{{ row.parsedAt }}</td>
+              <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-red-700" dir="ltr">{{ row.targetServer }}</td>
+              <td class="max-w-[14rem] truncate px-3 py-2 text-center text-xs text-red-600" :title="row.errorMessage" dir="ltr">
+                {{ row.errorMessage }}
+              </td>
+              <td class="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-800">{{ row.failedAt }}</td>
             </tr>
           </tbody>
         </table>
@@ -99,99 +85,24 @@
         </div>
       </div>
     </div>
-
-    <div v-else class="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div class="border-b border-slate-200 px-4 py-3 sm:px-6">
-        <h2 class="text-lg font-semibold text-slate-800">داده خام دریافتی</h2>
-      </div>
-      <div v-if="rawRecords.length" class="divide-y divide-slate-200">
-        <div v-for="(record, index) in rawRecords" :key="record.id" class="px-4 sm:px-6">
-          <button
-            type="button"
-            class="flex w-full items-center justify-between gap-3 py-3 text-left"
-            @click="toggleRaw(record.id)"
-          >
-            <span class="text-sm font-medium text-slate-800">
-              #{{ index + 1 }} — IMEI:
-              <span class="font-mono" dir="ltr">{{ record.imei }}</span>
-            </span>
-            <span class="shrink-0 text-xs text-slate-500">{{ formatParsedAt(record.created_at) }}</span>
-            <svg
-              class="h-4 w-4 shrink-0 text-slate-500 transition-transform"
-              :class="{ 'rotate-180': expandedRaw.has(record.id) }"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
-            </svg>
-          </button>
-          <div v-show="expandedRaw.has(record.id)">
-            <pre class="mb-3 overflow-x-auto rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-700" dir="ltr">{{ record.raw_data }}</pre>
-          </div>
-          <div v-show="!expandedRaw.has(record.id)">
-            <pre class="mb-3 overflow-x-auto rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-700" dir="ltr">{{ rawPreview(record.raw_data) }}</pre>
-            <button
-              v-if="isLongRaw(record.raw_data)"
-              type="button"
-              class="mb-3 text-xs text-slate-600 underline hover:text-slate-900"
-              @click="toggleRaw(record.id)"
-            >
-              نمایش کامل
-            </button>
-          </div>
-        </div>
-      </div>
-      <div v-else class="px-4 py-12 text-center text-sm text-slate-500">
-        {{ hasSearched ? 'رکوردی برای فیلترهای انتخاب‌شده یافت نشد' : 'تاریخ را انتخاب کرده و جستجو کنید' }}
-      </div>
-    </div>
   </main>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
 import PersianDateInput from '../components/PersianDateInput.vue'
-import { IMEI_PATTERN, formatStatus, parseParsedData } from '../utils/gpsRecords'
+import { IMEI_PATTERN, formatStatus, parseParsedData, shortServerLabel } from '../utils/gpsRecords'
 import { formatPersianDate, formatPersianDateTime, todayGregorianISO } from '../utils/persianDate'
 
-const RAW_COLLAPSE_THRESHOLD = 120
-const dateInputId = 'analysis-date'
-
+const dateInputId = 'failed-date'
 const selectedDate = ref(todayGregorianISO())
 const imeiInput = ref('')
-const viewMode = ref('parsed')
 const loading = ref(false)
 const queryError = ref(null)
 const imeiError = ref(null)
 const hasSearched = ref(false)
 const resultRecords = ref([])
 const resultCount = ref(null)
-const expandedRaw = ref(new Set())
-
-function formatParsedAt(iso) {
-  return formatPersianDateTime(iso)
-}
-
-function isLongRaw(text) {
-  return typeof text === 'string' && text.length > RAW_COLLAPSE_THRESHOLD
-}
-
-function rawPreview(text) {
-  if (!text) return ''
-  if (!isLongRaw(text)) return text
-  return `${text.slice(0, RAW_COLLAPSE_THRESHOLD)}…`
-}
-
-function toggleRaw(id) {
-  const next = new Set(expandedRaw.value)
-  if (next.has(id)) {
-    next.delete(id)
-  } else {
-    next.add(id)
-  }
-  expandedRaw.value = next
-}
 
 const parsedRows = computed(() =>
   resultRecords.value.map((record) => {
@@ -205,12 +116,12 @@ const parsedRows = computed(() =>
       speed: parsed.speed ?? '—',
       statusLabel: formatStatus(parsed.status),
       deviceDateTime: formatPersianDate(parsed.date_time),
-      parsedAt: formatParsedAt(record.created_at),
+      targetServer: shortServerLabel(record.target_server),
+      errorMessage: record.error_message || '—',
+      failedAt: formatPersianDateTime(record.failed_at),
     }
   }),
 )
-
-const rawRecords = computed(() => resultRecords.value)
 
 async function submitQuery() {
   queryError.value = null
@@ -228,13 +139,12 @@ async function submitQuery() {
   }
 
   loading.value = true
-  expandedRaw.value = new Set()
 
   try {
     const params = new URLSearchParams({ date: selectedDate.value })
     if (imei) params.set('imei', imei)
 
-    const response = await fetch(`/api/gps/records?${params.toString()}`)
+    const response = await fetch(`/api/gps/failed-records?${params.toString()}`)
     const data = await response.json()
 
     if (!response.ok) {
