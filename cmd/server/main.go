@@ -91,7 +91,7 @@ func main() {
 		zap.Bool("enabled", cfg.Filter.Enabled),
 		zap.Duration("sync_interval", cfg.Filter.RedisSyncInterval))
 
-	// Socket.IO for real-time broadcast (received + delivered). Created early so messageHandler can emit delivered events.
+	// Socket.IO for real-time delivery status broadcast. Created early so messageHandler can emit delivery events.
 	io := socketio.New()
 
 	// Wrap Socket.IO with async broadcaster for non-blocking high-throughput broadcasts
@@ -302,8 +302,7 @@ func main() {
 	logger.Info("Socket.IO enabled at /socket.io/")
 
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
-	// Use async broadcaster for non-blocking Socket.IO emissions
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, asyncBroadcaster, postgresStore)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore)
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)

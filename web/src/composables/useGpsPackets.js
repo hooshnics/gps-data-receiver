@@ -5,14 +5,6 @@ const MAX_PACKETS = 15
 const DEBUG = import.meta.env.DEV
 
 /**
- * @typedef {Object} GpsPacket
- * @property {string} message_id
- * @property {string} received_at
- * @property {string} payload
- * @property {number} payload_size
- */
-
-/**
  * @typedef {'sending' | 'delivered' | 'failed'} DeliveryStatus
  */
 
@@ -28,16 +20,12 @@ const DEBUG = import.meta.env.DEV
  */
 
 /**
- * Composable for real-time GPS packet streams via Socket.IO (received + delivery status).
- * @returns {{ packets: import('vue').Ref<GpsPacket[]>, deliveryBatches: import('vue').Ref<DeliveryBatch[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearPackets: () => void, clearDeliveryBatches: () => void }}
+ * Composable for real-time GPS delivery status via Socket.IO.
+ * @returns {{ deliveryBatches: import('vue').Ref<DeliveryBatch[]>, connected: import('vue').Ref<boolean>, error: import('vue').Ref<string|null>, socketId: import('vue').Ref<string|null>, clearDeliveryBatches: () => void }}
  */
 export function useGpsPackets() {
-  const packets = ref(/** @type {GpsPacket[]} */ ([]))
   const deliveryBatches = ref(/** @type {DeliveryBatch[]} */ ([]))
 
-  function clearPackets() {
-    packets.value = []
-  }
   function clearDeliveryBatches() {
     deliveryBatches.value = []
   }
@@ -110,29 +98,6 @@ export function useGpsPackets() {
       }
     })
 
-    socket.on('gps-packet', (data) => {
-      if (DEBUG) {
-        console.log('[Socket.IO] gps-packet received', data)
-      }
-      if (data && typeof data === 'object') {
-        const rawPayload = data.payload
-        packets.value = [
-          {
-            message_id: data.message_id ?? '',
-            received_at: data.received_at ?? new Date().toISOString(),
-            payload:
-              typeof rawPayload === 'string'
-                ? rawPayload
-                : rawPayload != null
-                  ? JSON.stringify(rawPayload)
-                  : '',
-            payload_size: typeof data.payload_size === 'number' ? data.payload_size : 0,
-          },
-          ...packets.value,
-        ].slice(0, MAX_PACKETS)
-      }
-    })
-
     socket.on('gps-delivery', (data) => {
       if (DEBUG) {
         console.log('[Socket.IO] gps-delivery received', data)
@@ -169,12 +134,10 @@ export function useGpsPackets() {
   })
 
   return {
-    packets,
     deliveryBatches,
     connected,
     error,
     socketId,
-    clearPackets,
     clearDeliveryBatches,
   }
 }
