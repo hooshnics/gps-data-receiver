@@ -1,4 +1,4 @@
-.PHONY: help build run test test-unit test-integration test-all benchmark clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch load-test flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -78,10 +78,33 @@ test-all: ## Run all tests
 	$(GOTEST) -v -race ./tests/...
 	@echo "All tests complete"
 
-benchmark: ## Run benchmark tests
+benchmark: ## Run all Go benchmark tests
 	@echo "Running benchmarks..."
-	$(GOTEST) -bench=. -benchmem -benchtime=3s ./tests/
+	$(GOTEST) -bench=. -benchmem -benchtime=3s ./tests/benchmark_test.go ./tests/benchmark/...
 	@echo "Benchmarks complete"
+
+benchmark-handler: ## Run handler/Redis benchmarks (requires Redis)
+	@echo "Running handler benchmarks (requires Redis on localhost:6379)..."
+	$(GOTEST) -bench=. -benchmem -benchtime=5s ./tests/benchmark/...
+	@echo "Handler benchmarks complete"
+
+build-loadtest: ## Build the high-throughput load test CLI
+	@echo "Building loadtest..."
+	@mkdir -p bin
+	$(GOBUILD) -o bin/loadtest ./cmd/loadtest
+	@echo "Build complete: bin/loadtest"
+
+load-test-go: build-loadtest ## Run load test via Go CLI (10K req/s default)
+	@./bin/loadtest
+
+load-test-high: build-loadtest ## Run intense load test (10K req/s, 60s)
+	@echo "Running high-intensity load test (10K req/s)..."
+	TARGET_URL=http://localhost:8080/api/gps/reports \
+	DURATION=60s \
+	WARMUP=10s \
+	RATE=10000 \
+	WORKERS=200 \
+	./scripts/load_test.sh
 
 coverage: ## Generate test coverage report
 	@echo "Generating coverage report..."
@@ -213,7 +236,7 @@ debug-cors: ## Debug CORS issues between Grafana and Prometheus
 	@echo "\n4. Checking Grafana datasource configuration:"
 	@docker exec gps-grafana cat /etc/grafana/provisioning/datasources/prometheus.yml
 
-load-test: ## Run load test (requires hey, vegeta, or ab)
+load-test: build-loadtest ## Run load test against running server (default 10K req/s)
 	@echo "Running load test..."
 	@./scripts/load_test.sh
 
