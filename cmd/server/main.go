@@ -101,16 +101,20 @@ func main() {
 	}
 
 	var postgresStore *storage.PostgresStore
+	var postgresWriter *storage.AsyncWriter
 	if cfg.Postgres.Enabled {
-		store, err := storage.NewPostgresStore(cfg.Postgres.DSN())
+		store, err := storage.NewPostgresStore(cfg.Postgres.DSN(), cfg.Worker.Count)
 		if err != nil {
 			logger.Fatal("Failed to initialize PostgreSQL storage", zap.Error(err))
 		}
 		postgresStore = store
+		postgresWriter = storage.NewAsyncWriter(store, 0)
+		defer postgresWriter.Close()
 		defer postgresStore.Close()
 		logger.Info("PostgreSQL storage enabled",
 			zap.String("host", cfg.Postgres.Host),
-			zap.String("db", cfg.Postgres.DBName))
+			zap.String("db", cfg.Postgres.DBName),
+			zap.Int("max_open_conns", cfg.Worker.Count))
 	}
 
 	// Create message handler that sends data to destination servers and broadcasts on success
@@ -229,17 +233,12 @@ func main() {
 
 		if !result.Success {
 			emitDelivery("failed", result.TargetServer)
-			if postgresStore != nil {
+			if postgresWriter != nil {
 				errMsg := ""
 				if result.Error != nil {
 					errMsg = result.Error.Error()
 				}
-				storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
-				if err := postgresStore.StoreFailedRecords(storeCtx, filteredData, result.TargetServer, errMsg); err != nil {
-					logger.Warn("Failed to store failed GPS records in PostgreSQL",
-						zap.Error(err))
-				}
-				storeCancel()
+				postgresWriter.EnqueueFailed(filteredData, result.TargetServer, errMsg)
 			}
 			logger.Warn("Send failed, message will be retried via queue redelivery",
 				zap.String("target_server", result.TargetServer),
@@ -250,13 +249,8 @@ func main() {
 
 		emitDelivery("delivered", result.TargetServer)
 
-		if postgresStore != nil {
-			storeCtx, storeCancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := postgresStore.StoreRecords(storeCtx, filteredData); err != nil {
-				logger.Warn("Failed to store GPS records in PostgreSQL",
-					zap.Error(err))
-			}
-			storeCancel()
+		if postgresWriter != nil {
+			postgresWriter.EnqueueSuccess(filteredData)
 		}
 
 		return nil

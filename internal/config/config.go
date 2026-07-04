@@ -134,7 +134,7 @@ func Load() (*Config, error) {
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
 		},
 		Worker: WorkerConfig{
-			Count:     getInt("WORKER_COUNT", 100),      // Increased for 10K RPS
+			Count:     getInt("WORKER_COUNT", 50), // Aligned with default outgoing rate limit
 			BatchSize: getInt("WORKER_BATCH_SIZE", 100), // Increased for 10K RPS
 		},
 		Retry: RetryConfig{
@@ -183,6 +183,12 @@ func Load() (*Config, error) {
 	// Validate required fields
 	if len(config.HTTP.DestinationServers) == 0 {
 		return nil, fmt.Errorf("DESTINATION_SERVERS must be configured")
+	}
+
+	// Keep worker count within outgoing rate limit so workers are not blocked waiting on limiter.
+	if config.OutgoingRateLimit.RequestsPerSecond > 0 &&
+		config.Worker.Count > config.OutgoingRateLimit.RequestsPerSecond {
+		config.Worker.Count = config.OutgoingRateLimit.RequestsPerSecond
 	}
 
 	return config, nil

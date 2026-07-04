@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	gojson "github.com/goccy/go-json"
@@ -49,15 +50,34 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
+type gpsRecordRow struct {
+	imei       string
+	rawData    string
+	parsedJSON []byte
+}
+
+type gpsFailedRecordRow struct {
+	gpsRecordRow
+	targetServer string
+	errorMessage string
+}
+
 // NewPostgresStore opens a PostgreSQL connection and ensures the schema exists.
-func NewPostgresStore(dsn string) (*PostgresStore, error) {
+func NewPostgresStore(dsn string, maxOpenConns int) (*PostgresStore, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	if maxOpenConns < 1 {
+		maxOpenConns = 25
+	}
+	db.SetMaxOpenConns(maxOpenConns)
+	idleConns := maxOpenConns / 4
+	if idleConns < 5 {
+		idleConns = 5
+	}
+	db.SetMaxIdleConns(idleConns)
 	db.SetConnMaxLifetime(30 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -106,28 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_gps_failed_records_imei_failed_at ON gps_failed_r
 	return nil
 }
 
-// StoreRecords inserts successfully delivered GPS records.
-func (s *PostgresStore) StoreRecords(ctx context.Context, records []parser.ParsedGPSData) error {
-	if s == nil || len(records) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO gps_records (imei, raw_data, parsed_data, created_at)
-VALUES ($1, $2, $3, $4)
-`)
-	if err != nil {
-		return fmt.Errorf("prepare insert: %w", err)
-	}
-	defer stmt.Close()
-
-	now := time.Now().UTC()
+func prepareGPSRecordRows(records []parser.ParsedGPSData) []gpsRecordRow {
+	rows := make([]gpsRecordRow, 0, len(records))
 	for _, record := range records {
 		if record.IMEI == "" || !imeiPattern.MatchString(record.IMEI) {
 			continue
@@ -154,12 +154,61 @@ VALUES ($1, $2, $3, $4)
 			rawData = " "
 		}
 
-		if _, err := stmt.ExecContext(ctx, record.IMEI, rawData, parsedJSON, now); err != nil {
-			logger.Warn("Failed to insert GPS record",
-				zap.String("imei", record.IMEI),
-				zap.Error(err))
-			continue
-		}
+		rows = append(rows, gpsRecordRow{
+			imei:       record.IMEI,
+			rawData:    rawData,
+			parsedJSON: parsedJSON,
+		})
+	}
+	return rows
+}
+
+func execBatchInsert(ctx context.Context, tx *sql.Tx, query string, args []interface{}) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("batch insert: %w", err)
+	}
+	return nil
+}
+
+// StoreRecords inserts successfully delivered GPS records.
+func (s *PostgresStore) StoreRecords(ctx context.Context, records []parser.ParsedGPSData) error {
+	if s == nil || len(records) == 0 {
+		return nil
+	}
+
+	rows := prepareGPSRecordRows(records)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	const columnsPerRow = 4
+	valuePlaceholders := make([]string, 0, len(rows))
+	args := make([]interface{}, 0, len(rows)*columnsPerRow)
+
+	for i, row := range rows {
+		base := i*columnsPerRow + 1
+		valuePlaceholders = append(valuePlaceholders, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3,
+		))
+		args = append(args, row.imei, row.rawData, row.parsedJSON, now)
+	}
+
+	query := `INSERT INTO gps_records (imei, raw_data, parsed_data, created_at) VALUES ` +
+		strings.Join(valuePlaceholders, ", ")
+
+	if err := execBatchInsert(ctx, tx, query, args); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -217,9 +266,27 @@ WHERE parsed_data->>'date_time' >= $1 AND parsed_data->>'date_time' < $2
 	return records, nil
 }
 
+func prepareGPSFailedRecordRows(records []parser.ParsedGPSData, targetServer, errorMessage string) []gpsFailedRecordRow {
+	baseRows := prepareGPSRecordRows(records)
+	rows := make([]gpsFailedRecordRow, 0, len(baseRows))
+	for _, row := range baseRows {
+		rows = append(rows, gpsFailedRecordRow{
+			gpsRecordRow: row,
+			targetServer: targetServer,
+			errorMessage: errorMessage,
+		})
+	}
+	return rows
+}
+
 // StoreFailedRecords inserts GPS records that failed delivery.
 func (s *PostgresStore) StoreFailedRecords(ctx context.Context, records []parser.ParsedGPSData, targetServer, errorMessage string) error {
 	if s == nil || len(records) == 0 {
+		return nil
+	}
+
+	rows := prepareGPSFailedRecordRows(records, targetServer, errorMessage)
+	if len(rows) == 0 {
 		return nil
 	}
 
@@ -229,48 +296,25 @@ func (s *PostgresStore) StoreFailedRecords(ctx context.Context, records []parser
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO gps_failed_records (imei, raw_data, parsed_data, target_server, error_message, failed_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-`)
-	if err != nil {
-		return fmt.Errorf("prepare insert: %w", err)
-	}
-	defer stmt.Close()
-
 	now := time.Now().UTC()
-	for _, record := range records {
-		if record.IMEI == "" || !imeiPattern.MatchString(record.IMEI) {
-			continue
-		}
+	const columnsPerRow = 6
+	valuePlaceholders := make([]string, 0, len(rows))
+	args := make([]interface{}, 0, len(rows)*columnsPerRow)
 
-		parsedPayload := map[string]interface{}{
-			"coordinate": record.Coordinate,
-			"speed":      record.Speed,
-			"status":     record.Status,
-			"directions": record.Directions,
-			"date_time":  record.DateTime,
-			"imei":       record.IMEI,
-		}
-		parsedJSON, err := gojson.Marshal(parsedPayload)
-		if err != nil {
-			logger.Warn("Failed to marshal parsed GPS record for failed storage",
-				zap.String("imei", record.IMEI),
-				zap.Error(err))
-			continue
-		}
+	for i, row := range rows {
+		base := i*columnsPerRow + 1
+		valuePlaceholders = append(valuePlaceholders, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5,
+		))
+		args = append(args, row.imei, row.rawData, row.parsedJSON, row.targetServer, row.errorMessage, now)
+	}
 
-		rawData := record.RawData
-		if rawData == "" {
-			rawData = " "
-		}
+	query := `INSERT INTO gps_failed_records (imei, raw_data, parsed_data, target_server, error_message, failed_at) VALUES ` +
+		strings.Join(valuePlaceholders, ", ")
 
-		if _, err := stmt.ExecContext(ctx, record.IMEI, rawData, parsedJSON, targetServer, errorMessage, now); err != nil {
-			logger.Warn("Failed to insert failed GPS record",
-				zap.String("imei", record.IMEI),
-				zap.Error(err))
-			continue
-		}
+	if err := execBatchInsert(ctx, tx, query, args); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
