@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -11,13 +12,23 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	redisKeyPrefix      = "stoppage_state:"
+	defaultSyncInterval = 30 * time.Second
+	shardCount          = 256
+)
+
+type stoppageShard struct {
+	mu    sync.RWMutex
+	state map[string]bool
+}
+
 // StoppageFilter filters redundant stoppage data to prevent sending duplicate
 // stoppage records to destination servers. It maintains state per IMEI to track
 // whether the last sent record was a stoppage or movement.
 type StoppageFilter struct {
 	redis        *redis.Client
-	state        map[string]bool // IMEI -> last was stoppage
-	mu           sync.RWMutex
+	shards       [shardCount]stoppageShard
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
@@ -26,10 +37,15 @@ type StoppageFilter struct {
 	syncInterval time.Duration
 }
 
-const (
-	redisKeyPrefix      = "stoppage_state:"
-	defaultSyncInterval = 30 * time.Second
-)
+func shardIndex(imei string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(imei))
+	return int(h.Sum32() % shardCount)
+}
+
+func (sf *StoppageFilter) shardForIMEI(imei string) *stoppageShard {
+	return &sf.shards[shardIndex(imei)]
+}
 
 // NewStoppageFilter creates a new stoppage filter with Redis-backed state
 func NewStoppageFilter(redisClient *redis.Client, enabled bool, syncInterval time.Duration) *StoppageFilter {
@@ -41,11 +57,14 @@ func NewStoppageFilter(redisClient *redis.Client, enabled bool, syncInterval tim
 
 	filter := &StoppageFilter{
 		redis:        redisClient,
-		state:        make(map[string]bool),
 		ctx:          ctx,
 		cancel:       cancel,
 		enabled:      enabled,
 		syncInterval: syncInterval,
+	}
+
+	for i := range filter.shards {
+		filter.shards[i].state = make(map[string]bool)
 	}
 
 	// Load existing state from Redis on startup
@@ -111,42 +130,32 @@ func (sf *StoppageFilter) FilterData(data []parser.ParsedGPSData) []parser.Parse
 
 	filtered := make([]parser.ParsedGPSData, 0, len(data))
 
-	sf.mu.Lock()
-	defer sf.mu.Unlock()
-
 	for _, record := range data {
 		imei := record.IMEI
+		shard := sf.shardForIMEI(imei)
 		isCurrentStoppage := sf.isStoppage(record)
-		lastWasStoppage, exists := sf.state[imei]
 
-		// Decision logic:
-		// - If movement: always send and update state
-		// - If stoppage and last was movement (or no prior state): send and update state
-		// - If stoppage and last was also stoppage: filter out (don't send)
+		shard.mu.Lock()
+		lastWasStoppage, exists := shard.state[imei]
 
 		if !isCurrentStoppage {
-			// Current is movement: always send
 			filtered = append(filtered, record)
-			sf.state[imei] = false // Update: last is now movement
+			shard.state[imei] = false
 			logger.Debug("Movement record - sending",
 				zap.String("imei", imei),
 				zap.Int("speed", record.Speed))
+		} else if !exists || !lastWasStoppage {
+			filtered = append(filtered, record)
+			shard.state[imei] = true
+			logger.Debug("First stoppage after movement - sending",
+				zap.String("imei", imei),
+				zap.Int("speed", record.Speed))
 		} else {
-			// Current is stoppage
-			if !exists || !lastWasStoppage {
-				// First stoppage or stoppage after movement: send
-				filtered = append(filtered, record)
-				sf.state[imei] = true // Update: last is now stoppage
-				logger.Debug("First stoppage after movement - sending",
-					zap.String("imei", imei),
-					zap.Int("speed", record.Speed))
-			} else {
-				// Redundant stoppage: filter out
-				logger.Debug("Redundant stoppage - filtering",
-					zap.String("imei", imei),
-					zap.Int("speed", record.Speed))
-			}
+			logger.Debug("Redundant stoppage - filtering",
+				zap.String("imei", imei),
+				zap.Int("speed", record.Speed))
 		}
+		shard.mu.Unlock()
 	}
 
 	if len(filtered) < len(data) {
@@ -166,12 +175,15 @@ func (sf *StoppageFilter) isStoppage(record parser.ParsedGPSData) bool {
 
 // syncToRedis persists the current state to Redis for durability
 func (sf *StoppageFilter) syncToRedis() {
-	sf.mu.RLock()
-	stateCopy := make(map[string]bool, len(sf.state))
-	for k, v := range sf.state {
-		stateCopy[k] = v
+	stateCopy := make(map[string]bool)
+	for i := range sf.shards {
+		shard := &sf.shards[i]
+		shard.mu.RLock()
+		for k, v := range shard.state {
+			stateCopy[k] = v
+		}
+		shard.mu.RUnlock()
 	}
-	sf.mu.RUnlock()
 
 	if len(stateCopy) == 0 {
 		return
@@ -233,19 +245,22 @@ func (sf *StoppageFilter) loadFromRedis() {
 				return
 			}
 
-			sf.mu.Lock()
 			for i, key := range keys {
-				// Extract IMEI from key (remove prefix)
 				imei := key[len(redisKeyPrefix):]
-
-				if values[i] != nil {
-					if strVal, ok := values[i].(string); ok {
-						sf.state[imei] = (strVal == "1")
-						loadedCount++
-					}
+				if values[i] == nil {
+					continue
 				}
+				strVal, ok := values[i].(string)
+				if !ok {
+					continue
+				}
+
+				shard := sf.shardForIMEI(imei)
+				shard.mu.Lock()
+				shard.state[imei] = (strVal == "1")
+				shard.mu.Unlock()
+				loadedCount++
 			}
-			sf.mu.Unlock()
 		}
 
 		cursor = nextCursor
@@ -264,15 +279,23 @@ func (sf *StoppageFilter) loadFromRedis() {
 
 // GetStateCount returns the number of IMEIs being tracked (for monitoring)
 func (sf *StoppageFilter) GetStateCount() int {
-	sf.mu.RLock()
-	defer sf.mu.RUnlock()
-	return len(sf.state)
+	total := 0
+	for i := range sf.shards {
+		shard := &sf.shards[i]
+		shard.mu.RLock()
+		total += len(shard.state)
+		shard.mu.RUnlock()
+	}
+	return total
 }
 
 // ClearState clears all state (useful for testing)
 func (sf *StoppageFilter) ClearState() {
-	sf.mu.Lock()
-	defer sf.mu.Unlock()
-	sf.state = make(map[string]bool)
+	for i := range sf.shards {
+		shard := &sf.shards[i]
+		shard.mu.Lock()
+		shard.state = make(map[string]bool)
+		shard.mu.Unlock()
+	}
 	logger.Info("Cleared stoppage filter state")
 }

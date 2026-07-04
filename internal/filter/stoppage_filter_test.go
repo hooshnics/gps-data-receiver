@@ -45,8 +45,7 @@ func TestNewStoppageFilter(t *testing.T) {
 	require.NotNil(t, filter)
 	assert.True(t, filter.enabled)
 	assert.Equal(t, 1*time.Second, filter.syncInterval)
-	assert.NotNil(t, filter.state)
-	assert.Equal(t, 0, len(filter.state))
+	assert.Equal(t, 0, filter.GetStateCount())
 }
 
 // TestFilterData_MovementOnly tests that all movement records pass through

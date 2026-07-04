@@ -30,7 +30,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "6379", cfg.Redis.Port)
 	assert.Equal(t, 0, cfg.Redis.DB)
 
-	assert.Equal(t, 100, cfg.Worker.Count) // Updated default for 10K RPS
+	assert.Equal(t, 50, cfg.Worker.Count) // Aligned with default outgoing rate limit
 	assert.Equal(t, 3, cfg.Retry.MaxAttempts)
 	assert.Equal(t, 500*time.Millisecond, cfg.Retry.DelayFirst) // Updated default for faster retries
 	assert.Equal(t, 1*time.Second, cfg.Retry.DelaySubsequent)   // Updated default for faster retries
@@ -49,6 +49,7 @@ func TestLoadConfig_CustomValues(t *testing.T) {
 	os.Setenv("REDIS_DB", "1")
 
 	os.Setenv("WORKER_COUNT", "100")
+	os.Setenv("OUTGOING_RATE_LIMIT_RPS", "100")
 	os.Setenv("MAX_RETRY_ATTEMPTS", "3")
 	os.Setenv("RETRY_DELAY_FIRST", "3s")
 	os.Setenv("RETRY_DELAY_SUBSEQUENT", "5s")
@@ -97,6 +98,17 @@ func TestLoadConfig_MissingDestinationServers(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, cfg)
 	assert.Contains(t, err.Error(), "DESTINATION_SERVERS must be configured")
+}
+
+func TestLoadConfig_WorkerCountCappedByOutgoingRateLimit(t *testing.T) {
+	os.Clearenv()
+	os.Setenv("DESTINATION_SERVERS", "http://server1.example.com")
+	os.Setenv("WORKER_COUNT", "100")
+	os.Setenv("OUTGOING_RATE_LIMIT_RPS", "50")
+
+	cfg, err := config.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 50, cfg.Worker.Count)
 }
 
 func TestGetRedisAddr(t *testing.T) {
