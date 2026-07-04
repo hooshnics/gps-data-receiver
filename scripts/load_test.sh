@@ -1,15 +1,18 @@
 #!/bin/bash
 
 # GPS Data Receiver Load Testing Script
-# This script performs load testing on the GPS data receiver endpoint
+# Generates sustained HTTP load (default 10K req/s) against the GPS receiver.
 
 set -e
 
 # Configuration
 TARGET_URL="${TARGET_URL:-http://localhost:8080/api/gps/reports}"
-DURATION="${DURATION:-60s}"
-RATE="${RATE:-1000}"  # requests per second
-WORKERS="${WORKERS:-50}"
+DURATION="${DURATION:-30s}"
+WARMUP="${WARMUP:-5s}"
+RATE="${RATE:-10000}"   # requests per second
+WORKERS="${WORKERS:-200}"
+TIMEOUT="${TIMEOUT:-5s}"
+LOADTEST_BIN="${LOADTEST_BIN:-./bin/loadtest}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -21,9 +24,35 @@ echo -e "${GREEN}GPS Data Receiver Load Test${NC}"
 echo "================================"
 echo "Target URL: $TARGET_URL"
 echo "Duration: $DURATION"
+echo "Warmup: $WARMUP"
 echo "Target Rate: $RATE req/s"
 echo "Workers: $WORKERS"
 echo ""
+
+# Prefer the built-in Go load tester (best for 10K+ req/s)
+if [ -x "$LOADTEST_BIN" ]; then
+    echo -e "${GREEN}Using built-in loadtest binary${NC}"
+    echo ""
+    exec "$LOADTEST_BIN" \
+        -url="$TARGET_URL" \
+        -duration="$DURATION" \
+        -warmup="$WARMUP" \
+        -rate="$RATE" \
+        -workers="$WORKERS" \
+        -timeout="$TIMEOUT"
+fi
+
+if command -v go &> /dev/null && [ -f "./cmd/loadtest/main.go" ]; then
+    echo -e "${GREEN}Using 'go run' loadtest (build with: make build-loadtest)${NC}"
+    echo ""
+    exec go run ./cmd/loadtest/main.go \
+        -url="$TARGET_URL" \
+        -duration="$DURATION" \
+        -warmup="$WARMUP" \
+        -rate="$RATE" \
+        -workers="$WORKERS" \
+        -timeout="$TIMEOUT"
+fi
 
 # Sample GPS data payload
 PAYLOAD='{"device_id":"GPS001","lat":37.7749,"lon":-122.4194,"timestamp":1234567890,"speed":45.5,"altitude":100,"heading":180}'
@@ -33,13 +62,13 @@ if command -v hey &> /dev/null; then
     echo -e "${GREEN}Using 'hey' for load testing${NC}"
     echo ""
     
-    hey -z $DURATION \
-        -q $RATE \
-        -c $WORKERS \
+    hey -z "$DURATION" \
+        -q "$RATE" \
+        -c "$WORKERS" \
         -m POST \
         -H "Content-Type: application/json" \
         -d "$PAYLOAD" \
-        $TARGET_URL
+        "$TARGET_URL"
     
     exit 0
 fi
@@ -56,9 +85,9 @@ if command -v vegeta &> /dev/null; then
     
     vegeta attack \
         -targets=/tmp/vegeta_targets.txt \
-        -rate=$RATE \
-        -duration=$DURATION \
-        -workers=$WORKERS \
+        -rate="$RATE" \
+        -duration="$DURATION" \
+        -workers="$WORKERS" \
         | vegeta report -type=text
     
     rm /tmp/vegeta_targets.txt
@@ -71,16 +100,16 @@ if command -v ab &> /dev/null; then
     echo ""
     
     # Calculate total requests
-    DURATION_SECS=$(echo $DURATION | sed 's/s//')
+    DURATION_SECS=$(echo "$DURATION" | sed 's/s//')
     TOTAL_REQUESTS=$((RATE * DURATION_SECS))
     
     echo "$PAYLOAD" > /tmp/ab_payload.json
     
-    ab -n $TOTAL_REQUESTS \
-       -c $WORKERS \
+    ab -n "$TOTAL_REQUESTS" \
+       -c "$WORKERS" \
        -p /tmp/ab_payload.json \
        -T "application/json" \
-       $TARGET_URL
+       "$TARGET_URL"
     
     rm /tmp/ab_payload.json
     exit 0
@@ -89,9 +118,13 @@ fi
 # If no tool is found, provide installation instructions
 echo -e "${RED}No load testing tool found!${NC}"
 echo ""
-echo "Please install one of the following:"
+echo "Recommended: build the built-in load tester"
+echo "  make build-loadtest"
+echo "  make load-test"
 echo ""
-echo "1. hey (recommended):"
+echo "Or install one of the following:"
+echo ""
+echo "1. hey:"
 echo "   macOS: brew install hey"
 echo "   Linux: go install github.com/rakyll/hey@latest"
 echo ""
@@ -99,21 +132,5 @@ echo "2. vegeta:"
 echo "   macOS: brew install vegeta"
 echo "   Linux: go install github.com/tsenart/vegeta@latest"
 echo ""
-echo "3. Apache Bench (ab):"
-echo "   macOS: comes pre-installed"
-echo "   Ubuntu/Debian: sudo apt-get install apache2-utils"
-echo ""
-echo "Alternative: Use the manual load test below"
-echo ""
-echo "=== Manual Load Test with curl ==="
-echo "Run this in multiple terminals:"
-echo ""
-echo 'for i in {1..1000}; do'
-echo '  curl -X POST http://localhost:8080/api/gps/reports \'
-echo '    -H "Content-Type: application/json" \'
-echo "    -d '$PAYLOAD' &"
-echo 'done'
-echo 'wait'
 
 exit 1
-
