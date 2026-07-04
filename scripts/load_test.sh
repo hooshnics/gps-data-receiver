@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-TARGET_URL="${TARGET_URL:-http://localhost:8080/api/gps/reports}"
+TARGET_URL="${TARGET_URL:-https://api.hooshnics.com/api/gps/reports}"
 DURATION="${DURATION:-30s}"
 WARMUP="${WARMUP:-5s}"
 RATE="${RATE:-10000}"   # requests per second
