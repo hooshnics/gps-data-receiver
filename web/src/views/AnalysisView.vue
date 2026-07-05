@@ -50,9 +50,48 @@
             داده خام
           </label>
         </div>
-        <p v-if="resultCount !== null" class="text-sm text-slate-600">
-          {{ resultCount }} رکورد یافت شد
-        </p>
+        <div class="flex flex-wrap items-center gap-3">
+          <div
+            v-if="resultRecords.length"
+            class="flex flex-wrap items-center gap-2"
+            aria-label="خروجی گرفتن"
+          >
+            <span class="text-xs font-medium text-slate-500">پارس‌شده:</span>
+            <button
+              type="button"
+              class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              @click="exportParsed('json')"
+            >
+              JSON
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              @click="exportParsed('excel')"
+            >
+              Excel
+            </button>
+            <span class="mx-1 text-slate-300">|</span>
+            <span class="text-xs font-medium text-slate-500">خام:</span>
+            <button
+              type="button"
+              class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              @click="exportRaw('json')"
+            >
+              JSON
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              @click="exportRaw('excel')"
+            >
+              Excel
+            </button>
+          </div>
+          <p v-if="resultCount !== null" class="text-sm text-slate-600">
+            {{ resultCount }} رکورد یافت شد
+          </p>
+        </div>
       </div>
     </div>
 
@@ -154,6 +193,7 @@ import { computed, ref } from 'vue'
 import PersianDateInput from '../components/PersianDateInput.vue'
 import { IMEI_PATTERN, formatStatus, parseParsedData } from '../utils/gpsRecords'
 import { formatPersianDate, formatPersianDateTime, todayGregorianISO } from '../utils/persianDate'
+import { buildExportFilename, downloadExcel, downloadJson } from '../utils/exportData'
 
 const RAW_COLLAPSE_THRESHOLD = 120
 const dateInputId = 'analysis-date'
@@ -211,6 +251,98 @@ const parsedRows = computed(() =>
 )
 
 const rawRecords = computed(() => resultRecords.value)
+
+function buildParsedExportRows() {
+  return resultRecords.value.map((record, index) => {
+    const parsed = parseParsedData(record.parsed_data)
+    const coord = Array.isArray(parsed.coordinate) ? parsed.coordinate : []
+    return {
+      ردیف: index + 1,
+      IMEI: record.imei,
+      'عرض جغرافیایی': coord[0] ?? '',
+      'طول جغرافیایی': coord[1] ?? '',
+      سرعت: parsed.speed ?? '',
+      وضعیت: formatStatus(parsed.status),
+      'تاریخ دستگاه': formatPersianDate(parsed.date_time),
+      'زمان ذخیره': formatParsedAt(record.created_at),
+    }
+  })
+}
+
+function buildParsedExportJson() {
+  return resultRecords.value.map((record) => {
+    const parsed = parseParsedData(record.parsed_data)
+    const coord = Array.isArray(parsed.coordinate) ? parsed.coordinate : []
+    return {
+      id: record.id,
+      imei: record.imei,
+      latitude: coord[0] ?? null,
+      longitude: coord[1] ?? null,
+      speed: parsed.speed ?? null,
+      status: parsed.status ?? null,
+      directions: parsed.directions ?? null,
+      device_date_time: parsed.date_time ?? null,
+      created_at: record.created_at,
+      parsed_data: parsed,
+    }
+  })
+}
+
+function buildRawExportRows() {
+  return resultRecords.value.map((record, index) => ({
+    ردیف: index + 1,
+    IMEI: record.imei,
+    'داده خام': record.raw_data ?? '',
+    'زمان دریافت': formatParsedAt(record.created_at),
+  }))
+}
+
+function buildRawExportJson() {
+  return resultRecords.value.map((record) => ({
+    id: record.id,
+    imei: record.imei,
+    raw_data: record.raw_data ?? '',
+    created_at: record.created_at,
+  }))
+}
+
+function currentImeiFilter() {
+  return imeiInput.value.trim()
+}
+
+function exportParsed(format) {
+  if (!resultRecords.value.length) return
+  const imei = currentImeiFilter()
+  if (format === 'json') {
+    downloadJson(
+      buildParsedExportJson(),
+      buildExportFilename('gps-parsed', selectedDate.value, imei, 'json'),
+    )
+    return
+  }
+  downloadExcel(
+    buildParsedExportRows(),
+    buildExportFilename('gps-parsed', selectedDate.value, imei, 'xls'),
+    'Parsed',
+  )
+}
+
+function exportRaw(format) {
+  if (!resultRecords.value.length) return
+  const imei = currentImeiFilter()
+  if (format === 'json') {
+    downloadJson(
+      buildRawExportJson(),
+      buildExportFilename('gps-raw', selectedDate.value, imei, 'json'),
+    )
+    return
+  }
+  downloadExcel(
+    buildRawExportRows(),
+    buildExportFilename('gps-raw', selectedDate.value, imei, 'xls'),
+    'Raw',
+  )
+}
 
 async function submitQuery() {
   queryError.value = null
