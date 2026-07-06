@@ -134,15 +134,18 @@ func main() {
 				postgresWriter.EnqueueInvalid(records)
 			}
 		}
+		storeFullInvalidPayload := func(reason string) {
+			enqueueInvalid([]parser.InvalidRecord{{
+				RawData: string(data),
+				Reason:  reason,
+			}})
+		}
 
 		if err != nil {
 			logger.Error("Failed to parse GPS data - dropping message",
 				zap.Error(err),
 				zap.String("raw_data", string(data)))
-			enqueueInvalid([]parser.InvalidRecord{{
-				RawData: string(sanitized),
-				Reason:  err.Error(),
-			}})
+			storeFullInvalidPayload(err.Error())
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordParseFailure()
 				metrics.AppMetrics.RecordDataDropped("parse_error")
@@ -161,10 +164,7 @@ func main() {
 			logger.Warn("No valid GPS records found - dropping message",
 				zap.String("raw_data", string(data)))
 			if len(parseResult.Invalid) == 0 {
-				enqueueInvalid([]parser.InvalidRecord{{
-					RawData: string(sanitized),
-					Reason:  "no valid GPS records found",
-				}})
+				storeFullInvalidPayload("no valid GPS records found")
 			}
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordParseFailure()

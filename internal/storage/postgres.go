@@ -475,24 +475,34 @@ func (s *PostgresStore) QueryInvalidRecords(ctx context.Context, filter Paginate
 SELECT id, raw_data, error_reason, created_at
 FROM gps_invalid_records
 `
-	args := make([]interface{}, 0, 4)
+	countArgs := make([]interface{}, 0, 2)
 	if hasDateFilter {
 		countQuery += ` WHERE created_at >= $1 AND created_at < $2`
+		countArgs = append(countArgs, filter.DateStart, filter.DateEnd)
+	}
+
+	var total int64
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return PaginatedInvalidRecords{}, fmt.Errorf("count invalid records: %w", err)
+	}
+
+	maxPage := int((total + int64(limit) - 1) / int64(limit))
+	if maxPage < 1 {
+		maxPage = 1
+	}
+	if page > maxPage {
+		page = maxPage
+	}
+	offset = (page - 1) * limit
+
+	args := make([]interface{}, 0, 4)
+	if hasDateFilter {
 		query += `WHERE created_at >= $1 AND created_at < $2
 `
 		args = append(args, filter.DateStart, filter.DateEnd)
 	}
 	query += `ORDER BY created_at DESC
 LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
-
-	var total int64
-	if hasDateFilter {
-		if err := s.db.QueryRowContext(ctx, countQuery, filter.DateStart, filter.DateEnd).Scan(&total); err != nil {
-			return PaginatedInvalidRecords{}, fmt.Errorf("count invalid records: %w", err)
-		}
-	} else if err := s.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
-		return PaginatedInvalidRecords{}, fmt.Errorf("count invalid records: %w", err)
-	}
 
 	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, query, args...)

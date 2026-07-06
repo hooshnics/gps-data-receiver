@@ -383,10 +383,19 @@ func TestDecodeJSONData_CleaningOperations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := decodeJSONData(tt.input)
+			result, _, err := decodeJSONData(tt.input)
 			tt.validate(t, result, err)
 		})
 	}
+}
+
+func TestParse_EmptyArrayWithOnlyMalformedObjects(t *testing.T) {
+	data := []byte(`[{"data":"\x00broken\x7F"}]`)
+
+	result, err := Parse(data)
+	require.NoError(t, err)
+	assert.Empty(t, result.Records)
+	assert.NotEmpty(t, result.Invalid)
 }
 
 func BenchmarkParse_SingleRecord(b *testing.B) {
