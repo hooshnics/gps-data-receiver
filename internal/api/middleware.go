@@ -78,7 +78,7 @@ func LoggingMiddleware() gin.HandlerFunc {
 				zap.String("path", path),
 				zap.Int("status", statusCode),
 				zap.Duration("duration", duration))
-		case duration > 1*time.Second:
+		case duration > 1*time.Second && !strings.HasPrefix(path, "/socket.io"):
 			logger.Info("Slow request completed",
 				zap.String("request_id", rid),
 				zap.String("method", method),
