@@ -16,9 +16,9 @@ func TestParse_ValidSingleRecord(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err)
-	require.Len(t, result, 1)
+	require.Len(t, result.Records, 1)
 
-	record := result[0]
+	record := result.Records[0]
 	assert.Equal(t, "861826074262144", record.IMEI)
 	assert.Equal(t, 0, record.Speed)
 	assert.Equal(t, 0, record.Status)
@@ -40,17 +40,17 @@ func TestParse_MultipleRecords(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err)
-	require.Len(t, result, 3)
+	require.Len(t, result.Records, 3)
 
 	// Check all records have the same IMEI
-	for _, record := range result {
+	for _, record := range result.Records {
 		assert.Equal(t, "863070043373009", record.IMEI)
 		assert.Equal(t, 1, record.Status)
 	}
 
 	// Check they are sorted by date_time (string comparison works for YYYY-MM-DD HH:MM:SS)
-	for i := 1; i < len(result); i++ {
-		assert.True(t, result[i-1].DateTime <= result[i].DateTime,
+	for i := 1; i < len(result.Records); i++ {
+		assert.True(t, result.Records[i-1].DateTime <= result.Records[i].DateTime,
 			"Records should be sorted by DateTime")
 	}
 }
@@ -61,10 +61,10 @@ func TestParse_MalformedJSONWithMissingCommas(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err, "Parser should fix missing commas")
-	require.Len(t, result, 2)
+	require.Len(t, result.Records, 2)
 
-	assert.Equal(t, "867994064030931", result[0].IMEI)
-	assert.Equal(t, "867994064030931", result[1].IMEI)
+	assert.Equal(t, "867994064030931", result.Records[0].IMEI)
+	assert.Equal(t, "867994064030931", result.Records[1].IMEI)
 }
 
 func TestParse_TrailingDots(t *testing.T) {
@@ -73,9 +73,9 @@ func TestParse_TrailingDots(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err, "Parser should handle trailing dots")
-	require.Len(t, result, 1)
+	require.Len(t, result.Records, 1)
 
-	assert.Equal(t, "861826074262144", result[0].IMEI)
+	assert.Equal(t, "861826074262144", result.Records[0].IMEI)
 }
 
 func TestParse_EmptyObjects(t *testing.T) {
@@ -84,9 +84,9 @@ func TestParse_EmptyObjects(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err, "Parser should handle empty objects")
-	require.Len(t, result, 1)
+	require.Len(t, result.Records, 1)
 
-	assert.Equal(t, "867717034651472", result[0].IMEI)
+	assert.Equal(t, "867717034651472", result.Records[0].IMEI)
 }
 
 func TestParse_EmptyArray(t *testing.T) {
@@ -95,7 +95,7 @@ func TestParse_EmptyArray(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err)
-	assert.Empty(t, result, "Empty array should return empty result")
+	assert.Empty(t, result.Records, "Empty array should return empty result")
 }
 
 func TestParse_InvalidGPSFormat(t *testing.T) {
@@ -104,7 +104,9 @@ func TestParse_InvalidGPSFormat(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err, "Should not error, just skip invalid records")
-	assert.Empty(t, result, "Invalid GPS format should be skipped")
+	assert.Empty(t, result.Records, "Invalid GPS format should be skipped")
+	require.Len(t, result.Invalid, 1)
+	assert.Equal(t, `863070046119607,+MZKR:V0.0,`, result.Invalid[0].RawData)
 }
 
 func TestParse_MixedValidAndInvalid(t *testing.T) {
@@ -112,10 +114,12 @@ func TestParse_MixedValidAndInvalid(t *testing.T) {
 
 	result, err := Parse(data)
 	require.NoError(t, err)
-	require.Len(t, result, 2, "Should parse valid records and skip invalid")
+	require.Len(t, result.Records, 2, "Should parse valid records and skip invalid")
+	require.Len(t, result.Invalid, 1)
+	assert.Equal(t, "invalid", result.Invalid[0].RawData)
 
 	// Records are sorted by date_time, so the order might differ from input order
-	imeis := []string{result[0].IMEI, result[1].IMEI}
+	imeis := []string{result.Records[0].IMEI, result.Records[1].IMEI}
 	assert.Contains(t, imeis, "861826074262144")
 	assert.Contains(t, imeis, "867994064030931")
 }
@@ -157,8 +161,8 @@ func TestParse_BrokenJSONKeepsValidRecords(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := Parse([]byte(tt.input))
 			require.NoError(t, err)
-			require.Len(t, result, tt.wantLen)
-			assert.Equal(t, tt.wantIMEI, result[0].IMEI)
+			require.Len(t, result.Records, tt.wantLen)
+			assert.Equal(t, tt.wantIMEI, result.Records[0].IMEI)
 		})
 	}
 }
@@ -184,9 +188,9 @@ func TestParse_DataSamples(t *testing.T) {
 
 			switch i {
 			case 0:
-				require.Len(t, result, 21)
+				require.Len(t, result.Records, 21)
 			case 1:
-				require.Len(t, result, 17)
+				require.Len(t, result.Records, 17)
 			}
 		})
 	}

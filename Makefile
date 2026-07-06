@@ -28,10 +28,12 @@ REDIS_HOST ?= localhost
 REDIS_PORT ?= 6379
 REDIS_DB ?= 0
 
-# MySQL defaults (override via environment)
-MYSQL_HOST ?= localhost
-MYSQL_PORT ?= 3306
-MYSQL_DATABASE ?= gps_receiver
+# PostgreSQL defaults (override via environment)
+POSTGRES_HOST ?= localhost
+POSTGRES_PORT ?= 5432
+POSTGRES_USER ?= gps
+POSTGRES_PASSWORD ?= gps
+POSTGRES_DB ?= gps_receiver
 
 help: ## Display this help message
 	@echo "GPS Data Receiver - Makefile Commands"
@@ -253,23 +255,23 @@ flush-queue: ## Flush the entire Redis queue
 	fi
 	@echo "Redis queue flushed successfully."
 
-flush-database: ## Flush the entire MySQL database
-	@echo "WARNING: This will drop and recreate the $(MYSQL_DATABASE) database!"
-	@echo "Flushing MySQL database..."
-	@if $(DOCKER_COMPOSE) ps -q mysql >/dev/null 2>&1 && [ -n "$$($(DOCKER_COMPOSE) ps -q mysql)" ]; then \
-		$(DOCKER_COMPOSE) exec -T mysql mysql -u root -prootpass -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
-	elif command -v mysql >/dev/null 2>&1; then \
-		mysql -h $(MYSQL_HOST) -P $(MYSQL_PORT) -u root -e "DROP DATABASE IF EXISTS $(MYSQL_DATABASE); CREATE DATABASE $(MYSQL_DATABASE);"; \
+flush-database: ## Flush the entire PostgreSQL database
+	@echo "WARNING: This will drop and recreate the $(POSTGRES_DB) database!"
+	@echo "Flushing PostgreSQL database..."
+	@if $(DOCKER_COMPOSE) ps -q postgres >/dev/null 2>&1 && [ -n "$$($(DOCKER_COMPOSE) ps -q postgres)" ]; then \
+		$(DOCKER_COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -c "DROP DATABASE IF EXISTS $(POSTGRES_DB) WITH (FORCE);" -c "CREATE DATABASE $(POSTGRES_DB);"; \
+	elif command -v psql >/dev/null 2>&1; then \
+		PGPASSWORD=$(POSTGRES_PASSWORD) psql -h $(POSTGRES_HOST) -p $(POSTGRES_PORT) -U $(POSTGRES_USER) -d postgres -c "DROP DATABASE IF EXISTS $(POSTGRES_DB) WITH (FORCE);" -c "CREATE DATABASE $(POSTGRES_DB);"; \
 	else \
-		echo "Error: mysql client not found and mysql container not running."; \
-		echo "Start MySQL with 'docker compose up -d mysql' or install mysql client."; \
+		echo "Error: psql not found and postgres container not running."; \
+		echo "Start PostgreSQL with 'docker compose up -d postgres' or install the PostgreSQL client."; \
 		exit 1; \
 	fi
-	@echo "MySQL database flushed successfully."
+	@echo "PostgreSQL database flushed successfully."
 
 clear-queue: flush-queue ## Alias: clear the Redis queue (same as flush-queue)
 
-clear-database: flush-database ## Alias: clear the MySQL database (same as flush-database)
+clear-database: flush-database ## Alias: clear the PostgreSQL database (same as flush-database)
 
 install-tools: ## Install development tools
 	@echo "Installing development tools..."

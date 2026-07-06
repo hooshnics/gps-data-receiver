@@ -26,12 +26,12 @@ func TestParserIntegration_ValidSingleRecord(t *testing.T) {
 	assert.NotEmpty(t, sanitized)
 
 	// Parse
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err)
-	require.Len(t, parsed, 1)
+	require.Len(t, parseResult.Records, 1)
 
 	// Verify parsed data structure
-	record := parsed[0]
+	record := parseResult.Records[0]
 	assert.Equal(t, "861826074262144", record.IMEI)
 	assert.Equal(t, 0, record.Speed)
 	assert.Equal(t, 0, record.Status)
@@ -39,7 +39,7 @@ func TestParserIntegration_ValidSingleRecord(t *testing.T) {
 	assert.InDelta(t, 50.065317, record.Coordinate[1], 0.000001)
 
 	// Verify it can be marshaled to JSON
-	jsonData, err := json.Marshal(parsed)
+	jsonData, err := json.Marshal(parseResult.Records)
 	require.NoError(t, err)
 	assert.NotEmpty(t, jsonData)
 
@@ -54,20 +54,20 @@ func TestParserIntegration_MultipleRecords(t *testing.T) {
 	data := []byte(`[{"data":"+Hooshnic:V1.07,3558.49300,05008.0972,000,260224,050306,000,000,1,3,1,863070043373009"},{"data":"+Hooshnic:V1.07,3558.49300,05008.0972,000,260224,050307,000,000,1,3,1,863070043373009"},{"data":"+Hooshnic:V1.07,3558.49300,05008.0972,000,260224,050302,000,000,1,3,1,863070043373009"}]`)
 
 	sanitized := sanitizer.SanitizeUTF8(data)
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err)
-	require.Len(t, parsed, 3)
+	require.Len(t, parseResult.Records, 3)
 
 	// Verify all records
-	for _, record := range parsed {
+	for _, record := range parseResult.Records {
 		assert.Equal(t, "863070043373009", record.IMEI)
 		assert.Equal(t, 1, record.Status)
 	}
 
 	// Verify chronological sorting (string comparison works for YYYY-MM-DD HH:MM:SS)
-	for i := 1; i < len(parsed); i++ {
+	for i := 1; i < len(parseResult.Records); i++ {
 		assert.True(t,
-			parsed[i-1].DateTime <= parsed[i].DateTime,
+			parseResult.Records[i-1].DateTime <= parseResult.Records[i].DateTime,
 			"Records should be sorted by DateTime")
 	}
 }
@@ -77,29 +77,31 @@ func TestParserIntegration_MalformedJSON(t *testing.T) {
 	data := []byte(`[{"data":"+Hooshnic:V1.06,3556.89710,05004.1183,000,260224,045140,008,000,1,3,1,867994064030931"}{"data":"+Hooshnic:V1.06,3557.30520,05004.0061,000,260224,044121,004,000,1,3,1,867994064030931"}]`)
 
 	sanitized := sanitizer.SanitizeUTF8(data)
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err, "Parser should fix malformed JSON")
-	require.Len(t, parsed, 2)
+	require.Len(t, parseResult.Records, 2)
 }
 
 func TestParserIntegration_InvalidGPSFormat(t *testing.T) {
 	data := []byte(`[{"data":"863070046119607,+MZKR:V0.0,"}]`)
 
 	sanitized := sanitizer.SanitizeUTF8(data)
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err, "Should not error, just return empty")
-	assert.Empty(t, parsed, "Invalid GPS format should result in empty array")
+	assert.Empty(t, parseResult.Records, "Invalid GPS format should result in empty array")
+	require.Len(t, parseResult.Invalid, 1)
 }
 
 func TestParserIntegration_MixedValidInvalid(t *testing.T) {
 	data := []byte(`[{"data":"+Hooshnic:V1.06,3556.27680,05003.9190,000,260224,052019,000,000,0,3,1,861826074262144"},{"data":"invalid"},{"data":"+Hooshnic:V1.06,3557.30520,05004.0061,000,260224,044121,004,000,1,3,1,867994064030931"}]`)
 
 	sanitized := sanitizer.SanitizeUTF8(data)
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err)
-	require.Len(t, parsed, 2, "Should parse valid and skip invalid")
+	require.Len(t, parseResult.Records, 2, "Should parse valid and skip invalid")
+	require.Len(t, parseResult.Invalid, 1)
 
-	imeis := []string{parsed[0].IMEI, parsed[1].IMEI}
+	imeis := []string{parseResult.Records[0].IMEI, parseResult.Records[1].IMEI}
 	assert.Contains(t, imeis, "861826074262144")
 	assert.Contains(t, imeis, "867994064030931")
 }
@@ -108,9 +110,9 @@ func TestParserIntegration_EmptyArray(t *testing.T) {
 	data := []byte(`[]`)
 
 	sanitized := sanitizer.SanitizeUTF8(data)
-	parsed, err := parser.Parse(sanitized)
+	parseResult, err := parser.Parse(sanitized)
 	require.NoError(t, err)
-	assert.Empty(t, parsed)
+	assert.Empty(t, parseResult.Records)
 }
 
 func TestAPIIntegration_ReceiveAndParseGPSData(t *testing.T) {
@@ -192,7 +194,7 @@ func BenchmarkParserIntegration_EndToEnd(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sanitized := sanitizer.SanitizeUTF8(data)
-		parsed, _ := parser.Parse(sanitized)
-		_, _ = json.Marshal(parsed)
+		parseResult, _ := parser.Parse(sanitized)
+		_, _ = json.Marshal(parseResult.Records)
 	}
 }

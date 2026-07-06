@@ -17,11 +17,13 @@ type writeOpKind int
 const (
 	writeOpSuccess writeOpKind = iota
 	writeOpFailed
+	writeOpInvalid
 )
 
 type writeOp struct {
 	kind         writeOpKind
 	records      []parser.ParsedGPSData
+	invalid      []parser.InvalidRecord
 	targetServer string
 	errorMessage string
 }
@@ -77,17 +79,38 @@ func (w *AsyncWriter) process(op writeOp) {
 		err = w.store.StoreRecords(ctx, op.records)
 	case writeOpFailed:
 		err = w.store.StoreFailedRecords(ctx, op.records, op.targetServer, op.errorMessage)
+	case writeOpInvalid:
+		err = w.store.StoreInvalidRecords(ctx, op.invalid)
 	}
 
 	if err != nil {
 		logger.Warn("Async PostgreSQL write failed",
 			zap.Error(err),
-			zap.Int("record_count", len(op.records)))
+			zap.Int("record_count", len(op.records)),
+			zap.Int("invalid_count", len(op.invalid)))
 	}
 }
 
-func (w *AsyncWriter) enqueue(op writeOp) {
+func (w *AsyncWriter) enqueueSuccessOrFailed(op writeOp) {
 	if w == nil || len(op.records) == 0 {
+		return
+	}
+
+	select {
+	case w.ch <- op:
+	case <-w.ctx.Done():
+	default:
+		go func() {
+			select {
+			case w.ch <- op:
+			case <-w.ctx.Done():
+			}
+		}()
+	}
+}
+
+func (w *AsyncWriter) enqueueInvalid(op writeOp) {
+	if w == nil || len(op.invalid) == 0 {
 		return
 	}
 
@@ -106,17 +129,22 @@ func (w *AsyncWriter) enqueue(op writeOp) {
 
 // EnqueueSuccess schedules successfully delivered records for async storage.
 func (w *AsyncWriter) EnqueueSuccess(records []parser.ParsedGPSData) {
-	w.enqueue(writeOp{kind: writeOpSuccess, records: records})
+	w.enqueueSuccessOrFailed(writeOp{kind: writeOpSuccess, records: records})
 }
 
 // EnqueueFailed schedules failed delivery records for async storage.
 func (w *AsyncWriter) EnqueueFailed(records []parser.ParsedGPSData, targetServer, errorMessage string) {
-	w.enqueue(writeOp{
+	w.enqueueSuccessOrFailed(writeOp{
 		kind:         writeOpFailed,
 		records:      records,
 		targetServer: targetServer,
 		errorMessage: errorMessage,
 	})
+}
+
+// EnqueueInvalid schedules unparseable payloads for async storage.
+func (w *AsyncWriter) EnqueueInvalid(records []parser.InvalidRecord) {
+	w.enqueueInvalid(writeOp{kind: writeOpInvalid, invalid: records})
 }
 
 // Close stops the writer and waits for in-flight writes to finish.
