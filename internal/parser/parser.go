@@ -63,16 +63,17 @@ func Parse(data []byte) (ParseResult, error) {
 		return ParseResult{}, fmt.Errorf("input data cannot be empty")
 	}
 
-	decodedData, err := decodeJSONData(string(data))
+	decodedData, decodeInvalid, err := decodeJSONData(string(data))
 	if err != nil {
 		return ParseResult{}, fmt.Errorf("failed to decode JSON data: %w", err)
 	}
 
-	if len(decodedData) == 0 {
+	if len(decodedData) == 0 && len(decodeInvalid) == 0 {
 		return ParseResult{}, nil
 	}
 
-	processedData, invalid := processDataItems(decodedData)
+	processedData, processInvalid := processDataItems(decodedData)
+	invalid := append(decodeInvalid, processInvalid...)
 
 	sort.Slice(processedData, func(i, j int) bool {
 		return processedData[i].DateTime < processedData[j].DateTime
@@ -96,7 +97,7 @@ func preprocessJSON(jsonData string) string {
 // decodeJSONData decodes and cleans the JSON data.
 // When the full array cannot be decoded, individual {"data":"..."} objects are
 // extracted so only malformed records are dropped instead of the entire group.
-func decodeJSONData(jsonData string) ([]DataItem, error) {
+func decodeJSONData(jsonData string) ([]DataItem, []InvalidRecord, error) {
 	trimmedData := preprocessJSON(jsonData)
 
 	var decodedData []DataItem
@@ -105,36 +106,52 @@ func decodeJSONData(jsonData string) ([]DataItem, error) {
 			zap.Error(err),
 			zap.String("cleaned_data", trimmedData))
 
-		decodedData = extractDataItems(trimmedData)
-		if len(decodedData) == 0 {
-			return nil, fmt.Errorf("invalid JSON format: %w", err)
+		decodedData, extractionInvalid := extractDataItems(trimmedData)
+		if len(decodedData) == 0 && len(extractionInvalid) == 0 {
+			return nil, nil, fmt.Errorf("invalid JSON format: %w", err)
 		}
+		return decodedData, extractionInvalid, nil
 	}
 
-	return decodedData, nil
+	return decodedData, nil, nil
 }
 
 // extractDataItems recovers data records from malformed JSON arrays.
-func extractDataItems(jsonData string) []DataItem {
+func extractDataItems(jsonData string) ([]DataItem, []InvalidRecord) {
 	matches := dataObjectStartPattern.FindAllStringIndex(jsonData, -1)
 	if len(matches) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	items := make([]DataItem, 0, len(matches))
+	invalid := make([]InvalidRecord, 0)
 	for _, match := range matches {
 		valueStart := match[1]
 		data, nextIdx := readJSONStringValue(jsonData, valueStart)
 		if nextIdx == -1 {
+			fragment := jsonData[match[0]:]
+			if len(fragment) > 512 {
+				fragment = fragment[:512]
+			}
+			invalid = append(invalid, InvalidRecord{
+				RawData: fragment,
+				Reason:  "malformed JSON data object",
+			})
 			continue
 		}
 
-		if data != "" {
-			items = append(items, DataItem{Data: data})
+		if data == "" {
+			invalid = append(invalid, InvalidRecord{
+				RawData: data,
+				Reason:  "empty data field",
+			})
+			continue
 		}
+
+		items = append(items, DataItem{Data: data})
 	}
 
-	return items
+	return items, invalid
 }
 
 // readJSONStringValue reads a JSON string value and returns the decoded content

@@ -144,7 +144,12 @@ func (w *AsyncWriter) EnqueueFailed(records []parser.ParsedGPSData, targetServer
 
 // EnqueueInvalid schedules unparseable payloads for async storage.
 func (w *AsyncWriter) EnqueueInvalid(records []parser.InvalidRecord) {
-	w.enqueueInvalid(writeOp{kind: writeOpInvalid, invalid: records})
+	if w == nil || len(records) == 0 {
+		return
+	}
+	copied := make([]parser.InvalidRecord, len(records))
+	copy(copied, records)
+	w.enqueueInvalid(writeOp{kind: writeOpInvalid, invalid: copied})
 }
 
 // Close stops the writer and waits for in-flight writes to finish.
