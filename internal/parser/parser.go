@@ -14,6 +14,18 @@ import (
 	"go.uber.org/zap"
 )
 
+// InvalidRecord holds raw payload that could not be parsed into GPS data.
+type InvalidRecord struct {
+	RawData string `json:"raw_data"`
+	Reason  string `json:"reason"`
+}
+
+// ParseResult contains successfully parsed records and any invalid payloads.
+type ParseResult struct {
+	Records []ParsedGPSData
+	Invalid []InvalidRecord
+}
+
 // ParsedGPSData represents a parsed GPS record
 type ParsedGPSData struct {
 	Coordinate [2]float64    `json:"coordinate"` // [lat, lon]
@@ -45,31 +57,31 @@ var (
 	trailingCommaPattern   = regexp.MustCompile(`\},\s*\]`)
 )
 
-// Parse parses GPS data from JSON byte array into structured format
-func Parse(data []byte) ([]ParsedGPSData, error) {
+// Parse parses GPS data from JSON byte array into structured format.
+func Parse(data []byte) (ParseResult, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("input data cannot be empty")
+		return ParseResult{}, fmt.Errorf("input data cannot be empty")
 	}
 
-	// Decode JSON data with cleaning
 	decodedData, err := decodeJSONData(string(data))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode JSON data: %w", err)
+		return ParseResult{}, fmt.Errorf("failed to decode JSON data: %w", err)
 	}
 
 	if len(decodedData) == 0 {
-		return []ParsedGPSData{}, nil
+		return ParseResult{}, nil
 	}
 
-	// Process all data items
-	processedData := processDataItems(decodedData)
+	processedData, invalid := processDataItems(decodedData)
 
-	// Sort by date_time (string comparison works for YYYY-MM-DD HH:MM:SS format)
 	sort.Slice(processedData, func(i, j int) bool {
 		return processedData[i].DateTime < processedData[j].DateTime
 	})
 
-	return processedData, nil
+	return ParseResult{
+		Records: processedData,
+		Invalid: invalid,
+	}, nil
 }
 
 // preprocessJSON applies common cleanup for device payload artifacts.
@@ -167,12 +179,17 @@ func readJSONStringValue(raw string, start int) (string, int) {
 	return "", -1
 }
 
-// processDataItems processes multiple data items
-func processDataItems(items []DataItem) []ParsedGPSData {
+// processDataItems processes multiple data items.
+func processDataItems(items []DataItem) ([]ParsedGPSData, []InvalidRecord) {
 	processedData := make([]ParsedGPSData, 0, len(items))
+	invalid := make([]InvalidRecord, 0)
 
 	for _, item := range items {
 		if item.Data == "" {
+			invalid = append(invalid, InvalidRecord{
+				RawData: item.Data,
+				Reason:  "empty data field",
+			})
 			continue
 		}
 
@@ -181,13 +198,17 @@ func processDataItems(items []DataItem) []ParsedGPSData {
 			logger.Debug("Skipping invalid GPS record",
 				zap.Error(err),
 				zap.String("data", item.Data))
+			invalid = append(invalid, InvalidRecord{
+				RawData: item.Data,
+				Reason:  err.Error(),
+			})
 			continue
 		}
 
 		processedData = append(processedData, *parsed)
 	}
 
-	return processedData
+	return processedData, invalid
 }
 
 // processDataItem processes a single GPS data string

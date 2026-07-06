@@ -25,6 +25,13 @@
           >
             Failed
           </RouterLink>
+          <RouterLink
+            to="/invalid"
+            class="rounded-md px-4 py-2 text-sm font-medium transition"
+            :class="route.path === '/invalid' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+          >
+            Invalid
+          </RouterLink>
         </nav>
       </div>
     </header>

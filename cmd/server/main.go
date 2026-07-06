@@ -126,13 +126,23 @@ func main() {
 
 		// 2. Parse GPS data
 		parseStart := time.Now()
-		parsed, err := parser.Parse(sanitized)
+		parseResult, err := parser.Parse(sanitized)
 		parseDuration := time.Since(parseStart)
+
+		enqueueInvalid := func(records []parser.InvalidRecord) {
+			if postgresWriter != nil && len(records) > 0 {
+				postgresWriter.EnqueueInvalid(records)
+			}
+		}
 
 		if err != nil {
 			logger.Error("Failed to parse GPS data - dropping message",
 				zap.Error(err),
 				zap.String("raw_data", string(data)))
+			enqueueInvalid([]parser.InvalidRecord{{
+				RawData: string(sanitized),
+				Reason:  err.Error(),
+			}})
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordParseFailure()
 				metrics.AppMetrics.RecordDataDropped("parse_error")
@@ -140,10 +150,22 @@ func main() {
 			return nil // Return nil to ACK and drop the message (no retry)
 		}
 
+		if len(parseResult.Invalid) > 0 {
+			enqueueInvalid(parseResult.Invalid)
+		}
+
+		parsed := parseResult.Records
+
 		// Handle empty parse results
 		if len(parsed) == 0 {
 			logger.Warn("No valid GPS records found - dropping message",
 				zap.String("raw_data", string(data)))
+			if len(parseResult.Invalid) == 0 {
+				enqueueInvalid([]parser.InvalidRecord{{
+					RawData: string(sanitized),
+					Reason:  "no valid GPS records found",
+				}})
+			}
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordParseFailure()
 				metrics.AppMetrics.RecordDataDropped("empty_result")
@@ -314,6 +336,7 @@ func main() {
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	router.GET("/api/gps/records", handler.QueryGPSRecords)
 	router.GET("/api/gps/failed-records", handler.QueryFailedGPSRecords)
+	router.GET("/api/gps/invalid-records", handler.QueryInvalidGPSRecords)
 	router.GET("/health", handler.Health)
 	router.HEAD("/health", handler.Health)
 	router.GET("/ready", handler.Ready)

@@ -37,12 +37,37 @@ type FailedRecord struct {
 	FailedAt     time.Time         `json:"failed_at"`
 }
 
+// InvalidStoredRecord represents a stored unparseable GPS payload row.
+type InvalidStoredRecord struct {
+	ID          int64     `json:"id"`
+	RawData     string    `json:"raw_data"`
+	ErrorReason string    `json:"error_reason"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // QueryFilter filters stored records by device date_time and optional IMEI.
 type QueryFilter struct {
 	DateStart time.Time // inclusive start of day in query timezone
 	DateEnd   time.Time // exclusive end of day in query timezone
 	IMEI      string
 	Limit     int
+}
+
+// PaginatedQueryFilter paginates invalid records with an optional created_at range.
+// When DateStart and DateEnd are both zero, all records are included.
+type PaginatedQueryFilter struct {
+	DateStart time.Time
+	DateEnd   time.Time
+	Page      int
+	Limit     int
+}
+
+// PaginatedInvalidRecords holds a page of invalid records and total count.
+type PaginatedInvalidRecords struct {
+	Records []InvalidStoredRecord
+	Total   int64
+	Page    int
+	Limit   int
 }
 
 // PostgresStore persists GPS records to PostgreSQL.
@@ -119,6 +144,13 @@ CREATE TABLE IF NOT EXISTS gps_failed_records (
 );
 CREATE INDEX IF NOT EXISTS idx_gps_failed_records_failed_at ON gps_failed_records (failed_at);
 CREATE INDEX IF NOT EXISTS idx_gps_failed_records_imei_failed_at ON gps_failed_records (imei, failed_at);
+CREATE TABLE IF NOT EXISTS gps_invalid_records (
+    id BIGSERIAL PRIMARY KEY,
+    raw_data TEXT NOT NULL,
+    error_reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gps_invalid_records_created_at ON gps_invalid_records (created_at);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate postgres schema: %w", err)
@@ -370,6 +402,123 @@ WHERE parsed_data->>'date_time' >= $1 AND parsed_data->>'date_time' < $2
 	}
 
 	return records, nil
+}
+
+// StoreInvalidRecords inserts raw payloads that failed parsing or validation.
+func (s *PostgresStore) StoreInvalidRecords(ctx context.Context, records []parser.InvalidRecord) error {
+	if s == nil || len(records) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	const columnsPerRow = 3
+	valuePlaceholders := make([]string, 0, len(records))
+	args := make([]interface{}, 0, len(records)*columnsPerRow)
+
+	for i, record := range records {
+		rawData := record.RawData
+		if rawData == "" {
+			rawData = " "
+		}
+
+		base := i*columnsPerRow + 1
+		valuePlaceholders = append(valuePlaceholders, fmt.Sprintf(
+			"($%d, $%d, $%d)",
+			base, base+1, base+2,
+		))
+		args = append(args, rawData, record.Reason, now)
+	}
+
+	query := `INSERT INTO gps_invalid_records (raw_data, error_reason, created_at) VALUES ` +
+		strings.Join(valuePlaceholders, ", ")
+
+	if err := execBatchInsert(ctx, tx, query, args); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
+}
+
+// QueryInvalidRecords returns paginated invalid records for the given filter.
+func (s *PostgresStore) QueryInvalidRecords(ctx context.Context, filter PaginatedQueryFilter) (PaginatedInvalidRecords, error) {
+	if s == nil {
+		return PaginatedInvalidRecords{}, fmt.Errorf("postgres store not initialized")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	page := filter.Page
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * limit
+
+	hasDateFilter := !filter.DateStart.IsZero() && !filter.DateEnd.IsZero()
+
+	countQuery := `SELECT COUNT(*) FROM gps_invalid_records`
+	query := `
+SELECT id, raw_data, error_reason, created_at
+FROM gps_invalid_records
+`
+	args := make([]interface{}, 0, 4)
+	if hasDateFilter {
+		countQuery += ` WHERE created_at >= $1 AND created_at < $2`
+		query += `WHERE created_at >= $1 AND created_at < $2
+`
+		args = append(args, filter.DateStart, filter.DateEnd)
+	}
+	query += `ORDER BY created_at DESC
+LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
+
+	var total int64
+	if hasDateFilter {
+		if err := s.db.QueryRowContext(ctx, countQuery, filter.DateStart, filter.DateEnd).Scan(&total); err != nil {
+			return PaginatedInvalidRecords{}, fmt.Errorf("count invalid records: %w", err)
+		}
+	} else if err := s.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+		return PaginatedInvalidRecords{}, fmt.Errorf("count invalid records: %w", err)
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return PaginatedInvalidRecords{}, fmt.Errorf("query invalid records: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]InvalidStoredRecord, 0)
+	for rows.Next() {
+		var rec InvalidStoredRecord
+		if err := rows.Scan(&rec.ID, &rec.RawData, &rec.ErrorReason, &rec.CreatedAt); err != nil {
+			return PaginatedInvalidRecords{}, fmt.Errorf("scan invalid record: %w", err)
+		}
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return PaginatedInvalidRecords{}, fmt.Errorf("iterate invalid records: %w", err)
+	}
+
+	return PaginatedInvalidRecords{
+		Records: records,
+		Total:   total,
+		Page:    page,
+		Limit:   limit,
+	}, nil
 }
 
 // Close closes the database connection.
