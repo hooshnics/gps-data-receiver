@@ -335,6 +335,7 @@ func main() {
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	router.GET("/api/gps/records", handler.QueryGPSRecords)
+	router.GET("/api/gps/path", handler.QueryGPSPath)
 	router.GET("/api/gps/failed-records", handler.QueryFailedGPSRecords)
 	router.GET("/api/gps/invalid-records", handler.QueryInvalidGPSRecords)
 	router.GET("/health", handler.Health)

@@ -19,6 +19,13 @@
             Delivered
           </RouterLink>
           <RouterLink
+            to="/path"
+            class="rounded-md px-4 py-2 text-sm font-medium transition"
+            :class="route.path === '/path' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+          >
+            Path
+          </RouterLink>
+          <RouterLink
             to="/failed"
             class="rounded-md px-4 py-2 text-sm font-medium transition"
             :class="route.path === '/failed' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"

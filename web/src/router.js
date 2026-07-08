@@ -3,12 +3,14 @@ import MonitorView from './views/MonitorView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import FailedView from './views/FailedView.vue'
 import InvalidView from './views/InvalidView.vue'
+import PathMapView from './views/PathMapView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'monitor', component: MonitorView },
     { path: '/analysis', name: 'analysis', component: AnalysisView },
+    { path: '/path', name: 'path', component: PathMapView },
     { path: '/failed', name: 'failed', component: FailedView },
     { path: '/invalid', name: 'invalid', component: InvalidView },
   ],
