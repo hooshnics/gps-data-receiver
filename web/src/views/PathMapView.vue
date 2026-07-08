@@ -137,10 +137,24 @@ function initMap() {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
   })
 
+  const cartoVoyager = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  })
+
   const openTopoMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
     maxZoom: 17,
     attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap',
   })
+
+  // Satellite imagery is very helpful for urban movement paths.
+  const esriWorldImagery = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+    }
+  )
 
   // Default base layer
   osm.addTo(map)
@@ -152,6 +166,8 @@ function initMap() {
     'OpenStreetMap': osm,
     'CARTO Light': cartoLight,
     'CARTO Dark': cartoDark,
+    'CARTO Voyager (Urban)': cartoVoyager,
+    'Esri Satellite': esriWorldImagery,
     'OpenTopoMap': openTopoMap,
   }
 
@@ -189,6 +205,32 @@ function popupHtml(p) {
   `
 }
 
+function bearingDeg(a, b) {
+  if (!a || !b) return 0
+  const lat1 = (a.lat * Math.PI) / 180
+  const lat2 = (b.lat * Math.PI) / 180
+  const dLon = ((b.lng - a.lng) * Math.PI) / 180
+  const y = Math.sin(dLon) * Math.cos(lat2)
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+  const brng = (Math.atan2(y, x) * 180) / Math.PI
+  return (brng + 360) % 360
+}
+
+function arrowIcon({ color = '#2563eb', rotation = 0 } = {}) {
+  // Simple SVG arrow that we rotate via CSS transform.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24">
+    <path d="M12 2l7 20-7-4-7 4 7-20z" fill="${color}" stroke="white" stroke-width="1.2" />
+  </svg>`
+
+  return L.divIcon({
+    className: 'leaflet-arrow-marker',
+    html: `<div class="arrow" style="transform: rotate(${rotation}deg)">${svg}</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -11],
+  })
+}
+
 function renderPoints(points, keptPoints) {
   clearMap()
   if (!map) return
@@ -196,17 +238,25 @@ function renderPoints(points, keptPoints) {
   const latlngs = keptPoints.map((p) => [p.lat, p.lng])
   lineLayer.setLatLngs(latlngs)
 
-  for (const p of keptPoints) {
+  for (let i = 0; i < keptPoints.length; i++) {
+    const p = keptPoints[i]
     const isStoppage = p.speed === 0
-    const marker = L.circleMarker([p.lat, p.lng], {
-      radius: 6,
-      weight: 2,
-      color: isStoppage ? '#dc2626' : '#2563eb',
-      fillColor: isStoppage ? '#fecaca' : '#bfdbfe',
-      fillOpacity: 0.9,
+    const prev = keptPoints[i - 1] || null
+    const next = keptPoints[i + 1] || null
+    const rotation = next ? bearingDeg(p, next) : prev ? bearingDeg(prev, p) : 0
+
+    const marker = L.marker([p.lat, p.lng], {
+      icon: arrowIcon({ color: isStoppage ? '#dc2626' : '#2563eb', rotation }),
+      keyboard: false,
+      riseOnHover: true,
     })
-    marker.bindPopup(popupHtml(p), { maxWidth: 360 })
-    marker.addTo(markersLayer)
+      .bindPopup(popupHtml(p), { maxWidth: 360 })
+      .addTo(markersLayer)
+
+    // If speed is exactly 0, visually de-emphasize direction.
+    if (isStoppage) {
+      marker.setZIndexOffset(100)
+    }
   }
 
   if (latlngs.length) {
@@ -362,6 +412,17 @@ onBeforeUnmount(() => {
 .leaflet-control-layers {
   direction: rtl;
   text-align: right;
+}
+
+.leaflet-arrow-marker {
+  background: transparent;
+  border: none;
+}
+.leaflet-arrow-marker .arrow {
+  width: 22px;
+  height: 22px;
+  transform-origin: 50% 50%;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
 }
 </style>
 
