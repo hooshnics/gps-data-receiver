@@ -402,11 +402,11 @@ function arrowIcon({ color = '#2563eb', rotation = 0 } = {}) {
   })
 }
 
-function renderPoints(points, keptPoints) {
+function renderPoints(points, keptSegments) {
   clearMap()
   if (!map) return
 
-  const segments = splitTrackByGaps(keptPoints)
+  const segments = Array.isArray(keptSegments) ? keptSegments : []
   const allLatLngs = []
 
   for (const seg of segments) {
@@ -421,24 +421,26 @@ function renderPoints(points, keptPoints) {
     }).addTo(lineLayerGroup)
   }
 
-  for (let i = 0; i < keptPoints.length; i++) {
-    const p = keptPoints[i]
-    const isStoppage = p.speed === 0
-    const prev = keptPoints[i - 1] || null
-    const next = keptPoints[i + 1] || null
-    const rotation = next ? bearingDeg(p, next) : prev ? bearingDeg(prev, p) : 0
+  for (const seg of segments) {
+    for (let i = 0; i < seg.length; i++) {
+      const p = seg[i]
+      const isStoppage = p.speed === 0
+      const prev = seg[i - 1] || null
+      const next = seg[i + 1] || null
+      const rotation = next ? bearingDeg(p, next) : prev ? bearingDeg(prev, p) : 0
 
-    const marker = L.marker([p.lat, p.lng], {
-      icon: arrowIcon({ color: isStoppage ? '#dc2626' : '#2563eb', rotation }),
-      keyboard: false,
-      riseOnHover: true,
-    })
-      .bindPopup(popupHtml(p), { maxWidth: 360 })
-      .addTo(markersLayer)
+      const marker = L.marker([p.lat, p.lng], {
+        icon: arrowIcon({ color: isStoppage ? '#dc2626' : '#2563eb', rotation }),
+        keyboard: false,
+        riseOnHover: true,
+      })
+        .bindPopup(popupHtml(p), { maxWidth: 360 })
+        .addTo(markersLayer)
 
-    // If speed is exactly 0, visually de-emphasize direction.
-    if (isStoppage) {
-      marker.setZIndexOffset(100)
+      // If speed is exactly 0, visually de-emphasize direction.
+      if (isStoppage) {
+        marker.setZIndexOffset(100)
+      }
     }
   }
 
@@ -465,9 +467,13 @@ async function refresh() {
   try {
     const data = await fetchRecords()
     const normalized = normalizePathPoints(data.points)
-    // Server already de-duplicates consecutive stoppages and sorts.
-    const smoothed = smoothAndSimplifyTrack(normalized)
-    renderPoints(normalized, smoothed)
+    // Split first (grouping), then smooth/simplify per segment so we never filter across gaps.
+    const grouped = splitTrackByGaps(normalized)
+    const smoothedSegments = grouped
+      .map((seg) => smoothAndSimplifyTrack(seg))
+      .filter((seg) => seg.length >= 2)
+
+    renderPoints(normalized, smoothedSegments)
   } catch (e) {
     clearMap()
     stats.value = { total: null, kept: null }
