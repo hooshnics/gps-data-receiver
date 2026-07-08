@@ -240,7 +240,7 @@ function renderPoints(points, keptPoints) {
 
   for (let i = 0; i < keptPoints.length; i++) {
     const p = keptPoints[i]
-    const isStoppage = p.speed === 0
+    const isStoppage = p.speed === 0 && p.status === 0
     const prev = keptPoints[i - 1] || null
     const next = keptPoints[i + 1] || null
     const rotation = next ? bearingDeg(p, next) : prev ? bearingDeg(prev, p) : 0
