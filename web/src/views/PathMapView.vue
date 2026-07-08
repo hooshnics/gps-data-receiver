@@ -61,7 +61,7 @@ const imeiSelectEl = ref(null)
 
 let map = null
 let markersLayer = null
-let lineLayer = null
+let lineLayerGroup = null
 let layersControl = null
 
 function parseDateTimeLoose(value) {
@@ -109,6 +109,20 @@ const TRACK_FILTER = {
   rdpToleranceM: 6.0,
   // Leaflet native polyline simplification (Douglas-Peucker) per zoom level.
   leafletSmoothFactor: 1.3,
+}
+
+// Break the path into segments to avoid "teleport" lines when data is missing.
+// We split when consecutive points imply an unrealistic jump:
+// - big time gap, or
+// - big distance jump, or
+// - implausible instantaneous speed.
+const TRACK_GAP = {
+  maxTimeGapSec: 120, // 2 minutes
+  maxDistanceGapM: 300, // 300 meters
+  maxSpeedMps: 35, // 126 km/h
+  // If both time and distance are available, you can require both to exceed thresholds.
+  // Keeping it false is stricter (splits on either condition).
+  requireBothTimeAndDistance: true,
 }
 
 function normalizePathPoints(points) {
@@ -230,6 +244,51 @@ function smoothAndSimplifyTrack(points) {
   return simplifyRdp(distFiltered, TRACK_FILTER.rdpToleranceM)
 }
 
+function splitTrackByGaps(points) {
+  if (!points?.length) return []
+
+  const segments = []
+  let current = [points[0]]
+
+  const shouldSplit = (prev, next) => {
+    const distM = haversineMeters(prev, next)
+
+    const t1 = parseDateTimeLoose(prev?.date_time)?.getTime?.() ?? null
+    const t2 = parseDateTimeLoose(next?.date_time)?.getTime?.() ?? null
+    const dtSec = t1 != null && t2 != null ? Math.abs(t2 - t1) / 1000 : null
+
+    const speedMps = dtSec && dtSec > 0 ? distM / dtSec : null
+
+    const timeGap = dtSec != null && dtSec > TRACK_GAP.maxTimeGapSec
+    const distGap = distM > TRACK_GAP.maxDistanceGapM
+    const speedGap = speedMps != null && speedMps > TRACK_GAP.maxSpeedMps
+
+    if (TRACK_GAP.requireBothTimeAndDistance && dtSec != null) {
+      // Prefer the "GPSBabel-style" rule: split only if BOTH time and distance exceed thresholds.
+      // Still split on obviously impossible speed.
+      return speedGap || (timeGap && distGap)
+    }
+
+    // Split if any gap condition triggers.
+    return speedGap || timeGap || distGap
+  }
+
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1]
+    const next = points[i]
+
+    if (shouldSplit(prev, next)) {
+      if (current.length) segments.push(current)
+      current = [next]
+    } else {
+      current.push(next)
+    }
+  }
+
+  if (current.length) segments.push(current)
+  return segments.filter((s) => s.length >= 2)
+}
+
 function initMap() {
   if (map || !mapEl.value) return
   map = L.map(mapEl.value, { zoomControl: true })
@@ -272,12 +331,7 @@ function initMap() {
   osm.addTo(map)
 
   markersLayer = L.layerGroup().addTo(map)
-  lineLayer = L.polyline([], {
-    color: '#2563eb',
-    weight: 4,
-    opacity: 0.9,
-    smoothFactor: TRACK_FILTER.leafletSmoothFactor,
-  }).addTo(map)
+  lineLayerGroup = L.layerGroup().addTo(map)
 
   const baseLayers = {
     'OpenStreetMap': osm,
@@ -290,7 +344,7 @@ function initMap() {
 
   const overlays = {
     'نقاط': markersLayer,
-    'مسیر': lineLayer,
+    'مسیر': lineLayerGroup,
   }
 
   layersControl = L.control.layers(baseLayers, overlays, { position: 'topleft', collapsed: true })
@@ -302,7 +356,7 @@ function initMap() {
 
 function clearMap() {
   if (markersLayer) markersLayer.clearLayers()
-  if (lineLayer) lineLayer.setLatLngs([])
+  if (lineLayerGroup) lineLayerGroup.clearLayers()
 }
 
 function popupHtml(p) {
@@ -352,8 +406,20 @@ function renderPoints(points, keptPoints) {
   clearMap()
   if (!map) return
 
-  const latlngs = keptPoints.map((p) => [p.lat, p.lng])
-  lineLayer.setLatLngs(latlngs)
+  const segments = splitTrackByGaps(keptPoints)
+  const allLatLngs = []
+
+  for (const seg of segments) {
+    const latlngs = seg.map((p) => [p.lat, p.lng])
+    allLatLngs.push(...latlngs)
+
+    L.polyline(latlngs, {
+      color: '#2563eb',
+      weight: 4,
+      opacity: 0.9,
+      smoothFactor: TRACK_FILTER.leafletSmoothFactor,
+    }).addTo(lineLayerGroup)
+  }
 
   for (let i = 0; i < keptPoints.length; i++) {
     const p = keptPoints[i]
@@ -376,8 +442,8 @@ function renderPoints(points, keptPoints) {
     }
   }
 
-  if (latlngs.length) {
-    const bounds = L.latLngBounds(latlngs)
+  if (allLatLngs.length) {
+    const bounds = L.latLngBounds(allLatLngs)
     map.fitBounds(bounds.pad(0.15))
   }
 }
