@@ -10,6 +10,11 @@
   },
   "dependencies": {
     "jalaali-js": "^2.0.0",
+    "jquery": "^3.7.1",
+    "leaflet": "^1.9.4",
+    "persian-date": "^1.1.0",
+    "persian-datepicker": "^1.2.0",
+    "select2": "^4.1.0-rc.0",
     "socket.io-client": "^4.8.3",
     "vue": "^3.5.13",
     "vue-router": "^4.6.4"

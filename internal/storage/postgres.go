@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS gps_records (
 );
 CREATE INDEX IF NOT EXISTS idx_gps_records_created_at ON gps_records (created_at);
 CREATE INDEX IF NOT EXISTS idx_gps_records_imei_created_at ON gps_records (imei, created_at);
+-- Fast IMEI + device date_time range scans (used by path drawing).
+-- parsed_data->>'date_time' is stored as a string like "YYYY-MM-DD HH:MM:SS" which is lexicographically sortable.
+CREATE INDEX IF NOT EXISTS idx_gps_records_imei_device_dt ON gps_records (imei, (parsed_data->>'date_time'));
 CREATE TABLE IF NOT EXISTS gps_failed_records (
     id BIGSERIAL PRIMARY KEY,
     imei VARCHAR(15) NOT NULL,
@@ -156,6 +159,98 @@ CREATE INDEX IF NOT EXISTS idx_gps_invalid_records_created_at ON gps_invalid_rec
 		return fmt.Errorf("migrate postgres schema: %w", err)
 	}
 	return nil
+}
+
+// PathPoint is a minimal GPS point for map path drawing.
+type PathPoint struct {
+	ID       int64   `json:"id"`
+	IMEI     string  `json:"imei"`
+	Lat      float64 `json:"lat"`
+	Lng      float64 `json:"lng"`
+	Speed    float64 `json:"speed"`
+	Status   int64   `json:"status"`
+	DateTime string  `json:"date_time"`
+}
+
+type PathQueryFilter struct {
+	DateStart time.Time // inclusive start of day in query timezone
+	DateEnd   time.Time // exclusive end of day in query timezone
+	IMEI      string    // required
+	Limit     int
+}
+
+// QueryPathPoints returns a de-duplicated (consecutive stoppages removed) ordered path for one device and one day.
+// For performance, it extracts only the required fields from parsed_data in SQL.
+func (s *PostgresStore) QueryPathPoints(ctx context.Context, filter PathQueryFilter) ([]PathPoint, error) {
+	if s == nil {
+		return nil, fmt.Errorf("postgres store not initialized")
+	}
+	if filter.IMEI == "" {
+		return nil, fmt.Errorf("imei is required")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50000
+	}
+	if limit > 200000 {
+		limit = 200000
+	}
+
+	dateStart := filter.DateStart.Format("2006-01-02") + " 00:00:00"
+	dateEnd := filter.DateEnd.Format("2006-01-02") + " 00:00:00"
+
+	// Notes:
+	// - We rely on parsed_data->>'date_time' lexicographic order (YYYY-MM-DD HH:MM:SS).
+	// - We keep all movement points and only the first point in each consecutive stoppage run (speed == 0).
+	// - Use a single SQL query so Postgres does the windowing efficiently.
+	query := fmt.Sprintf(`
+WITH base AS (
+  SELECT
+    id,
+    imei,
+    parsed_data->>'date_time' AS date_time,
+    (parsed_data->'coordinate'->>0)::double precision AS lat,
+    (parsed_data->'coordinate'->>1)::double precision AS lng,
+    COALESCE(NULLIF(parsed_data->>'speed','')::double precision, 0) AS speed,
+    COALESCE(NULLIF(parsed_data->>'status','')::bigint, 0) AS status
+  FROM gps_records
+  WHERE imei = $1
+    AND parsed_data->>'date_time' >= $2
+    AND parsed_data->>'date_time' < $3
+    AND parsed_data ? 'coordinate'
+)
+SELECT id, imei, lat, lng, speed, status, date_time
+FROM (
+  SELECT
+    *,
+    (speed = 0) AS is_stop,
+    LAG(speed = 0, 1, false) OVER (ORDER BY date_time ASC, id ASC) AS prev_is_stop
+  FROM base
+) t
+WHERE NOT (is_stop AND prev_is_stop)
+ORDER BY date_time ASC, id ASC
+LIMIT %d
+`, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, filter.IMEI, dateStart, dateEnd)
+	if err != nil {
+		return nil, fmt.Errorf("query path points: %w", err)
+	}
+	defer rows.Close()
+
+	points := make([]PathPoint, 0)
+	for rows.Next() {
+		var p PathPoint
+		if err := rows.Scan(&p.ID, &p.IMEI, &p.Lat, &p.Lng, &p.Speed, &p.Status, &p.DateTime); err != nil {
+			return nil, fmt.Errorf("scan path point: %w", err)
+		}
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate path points: %w", err)
+	}
+	return points, nil
 }
 
 func prepareGPSRecordRows(records []parser.ParsedGPSData) []gpsRecordRow {
