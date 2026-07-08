@@ -99,6 +99,18 @@ function toNumberOrNull(v) {
   return Number.isFinite(n) ? n : null
 }
 
+// --- Track smoothing / noise reduction ---
+// Reduce visual zig-zag caused by GPS jitter:
+// 1) drop micro-movements (distance gating)
+// 2) simplify the resulting polyline (Douglas-Peucker)
+const TRACK_FILTER = {
+  minStillDistanceM: 2.0,
+  minMoveDistanceM: 5.0,
+  rdpToleranceM: 6.0,
+  // Leaflet native polyline simplification (Douglas-Peucker) per zoom level.
+  leafletSmoothFactor: 1.3,
+}
+
 function normalizePathPoints(points) {
   const kept = []
   for (const p of points || []) {
@@ -116,6 +128,106 @@ function normalizePathPoints(points) {
     })
   }
   return kept
+}
+
+function deg2rad(deg) {
+  return (deg * Math.PI) / 180
+}
+
+function haversineMeters(a, b) {
+  // Distance in meters between two {lat,lng} points.
+  const R = 6371000
+  const lat1 = deg2rad(a.lat)
+  const lat2 = deg2rad(b.lat)
+  const dLat = lat2 - lat1
+  const dLng = deg2rad(b.lng - a.lng)
+  const sinDLat = Math.sin(dLat / 2)
+  const sinDLng = Math.sin(dLng / 2)
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+function filterByMinDistance(points) {
+  if (!points?.length) return []
+  const kept = [points[0]]
+
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i]
+    const last = kept[kept.length - 1]
+
+    const distM = haversineMeters(last, p)
+    const isStoppage = p.speed === 0
+    const minDistM = isStoppage ? TRACK_FILTER.minStillDistanceM : TRACK_FILTER.minMoveDistanceM
+
+    if (distM >= minDistM) kept.push(p)
+  }
+
+  return kept
+}
+
+function pointToSegmentDistanceMeters(p, start, end) {
+  // Equirectangular projection around the segment start.
+  const R = 6371000
+  const lat0 = deg2rad(start.lat)
+  const lon0 = deg2rad(start.lng)
+
+  const toXY = (q) => {
+    const lat = deg2rad(q.lat)
+    const lon = deg2rad(q.lng)
+    const x = (lon - lon0) * Math.cos(lat0) * R
+    const y = (lat - lat0) * R
+    return { x, y }
+  }
+
+  const s = toXY(start)
+  const e = toXY(end)
+  const pt = toXY(p)
+
+  const vx = e.x - s.x
+  const vy = e.y - s.y
+  const len2 = vx * vx + vy * vy
+  if (len2 === 0) {
+    const dx = pt.x - s.x
+    const dy = pt.y - s.y
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  const t = Math.max(0, Math.min(1, ((pt.x - s.x) * vx + (pt.y - s.y) * vy) / len2))
+  const projX = s.x + t * vx
+  const projY = s.y + t * vy
+  const dx = pt.x - projX
+  const dy = pt.y - projY
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+function simplifyRdp(points, toleranceM) {
+  if (!points?.length) return []
+  if (points.length <= 2) return points
+
+  const start = points[0]
+  const end = points[points.length - 1]
+
+  let maxDist = -1
+  let index = -1
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = pointToSegmentDistanceMeters(points[i], start, end)
+    if (d > maxDist) {
+      maxDist = d
+      index = i
+    }
+  }
+
+  if (maxDist >= 0 && maxDist <= toleranceM) return [start, end]
+
+  const left = simplifyRdp(points.slice(0, index + 1), toleranceM)
+  const right = simplifyRdp(points.slice(index), toleranceM)
+  return left.slice(0, -1).concat(right)
+}
+
+function smoothAndSimplifyTrack(points) {
+  const distFiltered = filterByMinDistance(points)
+  if (distFiltered.length <= 2) return distFiltered
+  return simplifyRdp(distFiltered, TRACK_FILTER.rdpToleranceM)
 }
 
 function initMap() {
@@ -160,7 +272,12 @@ function initMap() {
   osm.addTo(map)
 
   markersLayer = L.layerGroup().addTo(map)
-  lineLayer = L.polyline([], { color: '#2563eb', weight: 4, opacity: 0.9 }).addTo(map)
+  lineLayer = L.polyline([], {
+    color: '#2563eb',
+    weight: 4,
+    opacity: 0.9,
+    smoothFactor: TRACK_FILTER.leafletSmoothFactor,
+  }).addTo(map)
 
   const baseLayers = {
     'OpenStreetMap': osm,
@@ -281,9 +398,10 @@ async function refresh() {
   loading.value = true
   try {
     const data = await fetchRecords()
-    const kept = normalizePathPoints(data.points)
+    const normalized = normalizePathPoints(data.points)
     // Server already de-duplicates consecutive stoppages and sorts.
-    renderPoints(kept, kept)
+    const smoothed = smoothAndSimplifyTrack(normalized)
+    renderPoints(normalized, smoothed)
   } catch (e) {
     clearMap()
     stats.value = { total: null, kept: null }
