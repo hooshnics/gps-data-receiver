@@ -62,6 +62,7 @@ const imeiSelectEl = ref(null)
 let map = null
 let markersLayer = null
 let lineLayer = null
+let layersControl = null
 
 function parseDateTimeLoose(value) {
   if (!value) return null
@@ -121,13 +122,46 @@ function initMap() {
   if (map || !mapEl.value) return
   map = L.map(mapEl.value, { zoomControl: true })
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(map)
+  })
+
+  const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  })
+
+  const cartoDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  })
+
+  const openTopoMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    maxZoom: 17,
+    attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap',
+  })
+
+  // Default base layer
+  osm.addTo(map)
 
   markersLayer = L.layerGroup().addTo(map)
   lineLayer = L.polyline([], { color: '#2563eb', weight: 4, opacity: 0.9 }).addTo(map)
+
+  const baseLayers = {
+    'OpenStreetMap': osm,
+    'CARTO Light': cartoLight,
+    'CARTO Dark': cartoDark,
+    'OpenTopoMap': openTopoMap,
+  }
+
+  const overlays = {
+    'نقاط': markersLayer,
+    'مسیر': lineLayer,
+  }
+
+  layersControl = L.control.layers(baseLayers, overlays, { position: 'topleft', collapsed: true })
+  layersControl.addTo(map)
 
   // Default view: Iran-ish; will be replaced by fitBounds when data arrives.
   map.setView([32.0, 53.0], 5)
@@ -296,6 +330,7 @@ onBeforeUnmount(() => {
     map.remove()
     map = null
   }
+  layersControl = null
 })
 </script>
 
@@ -319,6 +354,12 @@ onBeforeUnmount(() => {
 
 /* Ensure Leaflet popups render RTL */
 .leaflet-popup-content {
+  direction: rtl;
+  text-align: right;
+}
+
+/* Make Leaflet layers control readable in RTL pages */
+.leaflet-control-layers {
   direction: rtl;
   text-align: right;
 }
