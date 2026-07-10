@@ -50,7 +50,7 @@ type DataItem struct {
 
 // GPS data format validation regex
 // Pattern: +Hooshnic:V{version},{lat},{lon},{field3},{date},{time},{speed},{field7},{status},{ew},{ns},{imei}
-var gpsDataPattern = regexp.MustCompile(`^\+[A-Za-z]+:[A-Za-z0-9.]+,\d{4}\.\d{5},\d{5}\.\d{4},\d{3},\d{6},\d{6},\d{3},\d{3},\d,\d,\d,\d{15}$`)
+var gpsDataPattern = regexp.MustCompile(`^\+[^:]+:[^,]+(,[^,]+){12}$`)
 
 var (
 	dataObjectStartPattern = regexp.MustCompile(`\{"data"\s*:\s*"`)
