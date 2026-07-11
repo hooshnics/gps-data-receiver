@@ -230,10 +230,10 @@ func processDataItems(items []DataItem) ([]ParsedGPSData, []InvalidRecord) {
 
 // processDataItem processes a single GPS data string
 func processDataItem(data string) (*ParsedGPSData, error) {
-	// Validate data format
-	if !isValidDataFormat(data) {
-		return nil, fmt.Errorf("invalid GPS data format")
-	}
+	// TEMP: regex format validation disabled
+	// if !isValidDataFormat(data) {
+	// 	return nil, fmt.Errorf("invalid GPS data format")
+	// }
 
 	// Split by comma
 	fields := strings.Split(data, ",")
