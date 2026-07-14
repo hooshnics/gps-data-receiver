@@ -1,4 +1,4 @@
-.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go jmeter-ingest jmeter-hooshnic jmeter-read jmeter-gui clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go load-test-hooshnic-batch load-test-hooshnic-artifacts stress-test-hooshnic smoke-test-hooshnic jmeter-ingest jmeter-hooshnic jmeter-hooshnic-batch jmeter-read jmeter-gui clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -101,12 +101,34 @@ load-test-go: build-loadtest ## Run load test via Go CLI (10K req/s default)
 
 load-test-high: build-loadtest ## Run intense load test (10K req/s, 60s)
 	@echo "Running high-intensity load test (10K req/s)..."
-	TARGET_URL=http://localhost:8080/api/gps/reports \
-	DURATION=60s \
-	WARMUP=10s \
-	RATE=10000 \
-	WORKERS=200 \
-	./scripts/load_test.sh
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		DURATION=60s \
+		WARMUP=10s \
+		RATE=10000 \
+		WORKERS=200 \
+		./scripts/load_test.sh
+
+load-test-hooshnic-batch: build-loadtest ## Run load test with 3-record Hooshnic batch payload
+	@echo "Running Hooshnic batch load test..."
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		PAYLOAD_FILE=jmeter/data/hooshnic-batch-3records.json \
+		RATE=500 DURATION=60s WORKERS=100 \
+		./scripts/load_test.sh
+
+load-test-hooshnic-artifacts: build-loadtest ## Run load test with trailing-dot Hooshnic payload
+	@echo "Running Hooshnic artifact payload load test..."
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		PAYLOAD_FILE=jmeter/data/hooshnic-single-trailing-dots.body \
+		RATE=500 DURATION=60s WORKERS=100 \
+		./scripts/load_test.sh
+
+stress-test-hooshnic: build-loadtest ## Progressive stress test with Hooshnic batch payload
+	@chmod +x scripts/stress_test_hooshnic.sh
+	@./scripts/stress_test_hooshnic.sh
+
+smoke-test-hooshnic: ## Smoke-test Hooshnic sample payloads against running server
+	@chmod +x scripts/smoke_test_hooshnic.sh
+	@./scripts/smoke_test_hooshnic.sh
 
 coverage: ## Generate test coverage report
 	@echo "Generating coverage report..."
@@ -247,6 +269,9 @@ jmeter-ingest: ## Run JMeter ingest load test (generic JSON, default 1000 req/s)
 
 jmeter-hooshnic: ## Run JMeter Hooshnic device load test (CSV payloads)
 	@./jmeter/scripts/run-jmeter.sh hooshnic
+
+jmeter-hooshnic-batch: ## Run JMeter Hooshnic batch load test (multi-record payloads)
+	@./jmeter/scripts/run-jmeter.sh hooshnic-batch
 
 jmeter-read: ## Run JMeter read APIs load test (requires seeded Postgres data)
 	@./jmeter/scripts/run-jmeter.sh read

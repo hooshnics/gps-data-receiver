@@ -31,6 +31,9 @@ make jmeter-ingest
 # Realistic Hooshnic device payloads from CSV
 make jmeter-hooshnic
 
+# Multi-record Hooshnic batches (3 records + empty object, trailing dots)
+make jmeter-hooshnic-batch
+
 # Read/query API endpoints (lower concurrency)
 make jmeter-read
 ```
@@ -41,6 +44,7 @@ make jmeter-read
 |------|------|--------|--------------|
 | **Ingest** | `plans/gps-ingest-load.jmx` | `POST /api/gps/reports` | 100 threads, 1000 req/s |
 | **Hooshnic** | `plans/gps-ingest-hooshnic.jmx` | `POST /api/gps/reports` (device format) | 50 threads, 500 req/s |
+| **Hooshnic Batch** | `plans/gps-ingest-hooshnic-batch.jmx` | `POST /api/gps/reports` (multi-record files) | 50 threads, 500 req/s |
 | **Read APIs** | `plans/gps-read-apis.jmx` | `GET /health`, `/api/gps/records`, `/path`, etc. | 10 threads |
 
 ### Ingest Load Test
@@ -54,6 +58,43 @@ Primary throughput test for the hot path. Sends generic JSON payloads with uniqu
 ### Hooshnic Device Test
 
 End-to-end pipeline test using real device payload format. Reads device data from `data/hooshnic-devices.csv` (IMEI, NMEA coordinates, timestamps).
+
+### Hooshnic Batch Test
+
+Load test using your real multi-record device payloads from `jmeter/data/`:
+
+| File | Description |
+|------|-------------|
+| `hooshnic-batch-3records.json` | 3 GPS records plus an empty `{}` object |
+| `hooshnic-single-trailing-dots.body` | Single record with trailing `.` artifacts |
+| `hooshnic-payload-files.csv` | Rotates between the two payloads above |
+
+By default the plan alternates between both payload shapes. Lock to one file with `PAYLOAD_FILE`:
+
+```bash
+# Rotate both payload shapes (default)
+make jmeter-hooshnic-batch
+
+# Only the 3-record batch
+PAYLOAD_FILE=hooshnic-batch-3records.json make jmeter-hooshnic-batch
+
+# Only trailing-dot artifact payload
+PAYLOAD_FILE=hooshnic-single-trailing-dots.body make jmeter-hooshnic-batch
+```
+
+Quick smoke test before load testing:
+
+```bash
+make smoke-test-hooshnic
+```
+
+Go load tester with the same payloads:
+
+```bash
+make load-test-hooshnic-batch
+make load-test-hooshnic-artifacts
+make stress-test-hooshnic
+```
 
 ### Read APIs Test
 
@@ -74,6 +115,8 @@ All plans accept JMeter properties via environment variables:
 | `RATE` | `1000` / `500` | Target req/s (ingest plans) |
 | `QUERY_DATE` | `2026-02-24` | Date for read API queries |
 | `QUERY_IMEI` | `861826074262144` | IMEI for read API queries |
+| `PAYLOAD_FILE` | (empty) | Fixed payload file in `jmeter/data/` for hooshnic-batch |
+| `PAYLOAD_CSV` | `hooshnic-payload-files.csv` | Payload rotation list for hooshnic-batch |
 
 ### Examples
 
@@ -173,10 +216,14 @@ jmeter/
   plans/
     gps-ingest-load.jmx      # generic JSON throughput
     gps-ingest-hooshnic.jmx  # realistic device payloads
+    gps-ingest-hooshnic-batch.jmx  # multi-record payloads from data files
     gps-read-apis.jmx        # query endpoints
   data/
     generic-payload.json     # sample payload reference
     hooshnic-devices.csv     # device data for CSV-driven tests
+    hooshnic-batch-3records.json
+    hooshnic-single-trailing-dots.body
+    hooshnic-payload-files.csv
   scripts/
     run-jmeter.sh            # CLI runner
   results/                   # test output (gitignored except .gitkeep)

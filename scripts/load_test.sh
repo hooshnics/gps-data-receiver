@@ -27,19 +27,27 @@ echo "Duration: $DURATION"
 echo "Warmup: $WARMUP"
 echo "Target Rate: $RATE req/s"
 echo "Workers: $WORKERS"
+if [[ -n "${PAYLOAD_FILE:-}" ]]; then
+    echo "Payload file: $PAYLOAD_FILE"
+fi
 echo ""
 
 # Prefer the built-in Go load tester (best for 10K+ req/s)
 if [ -x "$LOADTEST_BIN" ]; then
     echo -e "${GREEN}Using built-in loadtest binary${NC}"
     echo ""
-    exec "$LOADTEST_BIN" \
-        -url="$TARGET_URL" \
-        -duration="$DURATION" \
-        -warmup="$WARMUP" \
-        -rate="$RATE" \
-        -workers="$WORKERS" \
+    LOADTEST_ARGS=(
+        -url="$TARGET_URL"
+        -duration="$DURATION"
+        -warmup="$WARMUP"
+        -rate="$RATE"
+        -workers="$WORKERS"
         -timeout="$TIMEOUT"
+    )
+    if [[ -n "${PAYLOAD_FILE:-}" ]]; then
+        LOADTEST_ARGS+=(-payload="$PAYLOAD_FILE")
+    fi
+    exec "$LOADTEST_BIN" "${LOADTEST_ARGS[@]}"
 fi
 
 if command -v go &> /dev/null && [ -f "./cmd/loadtest/main.go" ]; then

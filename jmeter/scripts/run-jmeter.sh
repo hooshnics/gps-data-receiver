@@ -3,7 +3,8 @@
 #
 # Usage:
 #   ./jmeter/scripts/run-jmeter.sh ingest          # generic JSON throughput test
-#   ./jmeter/scripts/run-jmeter.sh hooshnic      # Hooshnic device CSV payloads
+#   ./jmeter/scripts/run-jmeter.sh hooshnic        # Hooshnic device CSV payloads
+#   ./jmeter/scripts/run-jmeter.sh hooshnic-batch  # multi-record payloads from jmeter/data/
 #   ./jmeter/scripts/run-jmeter.sh read            # read/query API endpoints
 #   ./jmeter/scripts/run-jmeter.sh ingest --gui    # open test plan in JMeter GUI
 #
@@ -17,6 +18,8 @@
 #   RATE          Target requests per second (ingest plans only)
 #   QUERY_DATE    Date for read API tests (default: 2026-02-24)
 #   QUERY_IMEI    IMEI for read API tests (default: 861826074262144)
+#   PAYLOAD_FILE  Fixed payload file in jmeter/data/ (hooshnic-batch only; default rotates CSV)
+#   PAYLOAD_CSV   Payload rotation CSV (default: hooshnic-payload-files.csv)
 #   JMETER_BIN    Path to jmeter executable (auto-detected)
 
 set -euo pipefail
@@ -47,6 +50,8 @@ DURATION="${DURATION:-60}"
 RATE="${RATE:-1000}"
 QUERY_DATE="${QUERY_DATE:-2026-02-24}"
 QUERY_IMEI="${QUERY_IMEI:-861826074262144}"
+PAYLOAD_FILE="${PAYLOAD_FILE:-}"
+PAYLOAD_CSV="${PAYLOAD_CSV:-hooshnic-payload-files.csv}"
 
 find_jmeter() {
     if [[ -n "${JMETER_BIN:-}" && -x "$JMETER_BIN" ]]; then
@@ -80,6 +85,11 @@ case "$SCENARIO" in
         THREADS="${THREADS:-50}"
         TARGET_RPM=$((RATE * 60))
         ;;
+    hooshnic-batch)
+        PLAN="$PLANS_DIR/gps-ingest-hooshnic-batch.jmx"
+        THREADS="${THREADS:-50}"
+        TARGET_RPM=$((RATE * 60))
+        ;;
     read)
         PLAN="$PLANS_DIR/gps-read-apis.jmx"
         THREADS="${THREADS:-10}"
@@ -87,7 +97,7 @@ case "$SCENARIO" in
         ;;
     *)
         echo -e "${RED}Unknown scenario: $SCENARIO${NC}"
-        echo "Valid scenarios: ingest, hooshnic, read"
+        echo "Valid scenarios: ingest, hooshnic, hooshnic-batch, read"
         exit 1
         ;;
 esac
@@ -146,6 +156,13 @@ if [[ "$SCENARIO" == "read" ]]; then
     echo "Query date:  $QUERY_DATE"
     echo "Query IMEI:  $QUERY_IMEI"
 fi
+if [[ "$SCENARIO" == "hooshnic-batch" ]]; then
+    if [[ -n "$PAYLOAD_FILE" ]]; then
+        echo "Payload:     $PAYLOAD_FILE (fixed)"
+    else
+        echo "Payload:     rotate via $PAYLOAD_CSV"
+    fi
+fi
 echo "Results:     $RUN_DIR"
 echo ""
 
@@ -165,6 +182,13 @@ fi
 
 if [[ "$SCENARIO" == "read" ]]; then
     JMETER_PROPS+=(-JQUERY_DATE="$QUERY_DATE" -JQUERY_IMEI="$QUERY_IMEI")
+fi
+
+if [[ "$SCENARIO" == "hooshnic-batch" ]]; then
+    JMETER_PROPS+=(-JPAYLOAD_CSV="$PAYLOAD_CSV")
+    if [[ -n "$PAYLOAD_FILE" ]]; then
+        JMETER_PROPS+=(-JPAYLOAD_FILE="$PAYLOAD_FILE")
+    fi
 fi
 
 if $GUI_MODE; then

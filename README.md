@@ -366,6 +366,12 @@ make jmeter-ingest
 # Realistic Hooshnic device payloads
 make jmeter-hooshnic
 
+# Multi-record Hooshnic batches (your sample payloads)
+make jmeter-hooshnic-batch
+make smoke-test-hooshnic
+make load-test-hooshnic-batch
+make stress-test-hooshnic
+
 # Read/query API endpoints
 make jmeter-read
 
