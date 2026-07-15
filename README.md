@@ -336,6 +336,8 @@ go test -bench=. -benchmem ./tests/
 
 ### Load Testing
 
+#### Go load tester (high throughput)
+
 ```bash
 # Start the application
 make run
@@ -349,6 +351,35 @@ DURATION=60s \
 RATE=2000 \
 ./scripts/load_test.sh
 ```
+
+#### JMeter (visual plans, HTML reports)
+
+Install JMeter: `brew install jmeter` (macOS) or see [jmeter/README.md](jmeter/README.md).
+
+```bash
+# Start the stack
+make docker-up
+
+# Ingest throughput test (POST /api/gps/reports)
+make jmeter-ingest
+
+# Realistic Hooshnic device payloads
+make jmeter-hooshnic
+
+# Multi-record Hooshnic batches (your sample payloads)
+make jmeter-hooshnic-batch
+make smoke-test-hooshnic
+make load-test-hooshnic-batch
+make stress-test-hooshnic
+
+# Read/query API endpoints
+make jmeter-read
+
+# Custom parameters
+HOST=localhost RATE=2000 THREADS=150 DURATION=120 make jmeter-ingest
+```
+
+Results are written to `jmeter/results/` with an HTML dashboard. See [jmeter/README.md](jmeter/README.md) for full configuration, rate-limit notes, and distributed testing.
 
 ## 🏗️ Development
 

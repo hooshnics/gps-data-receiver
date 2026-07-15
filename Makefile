@@ -1,4 +1,4 @@
-.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go load-test-hooshnic-batch load-test-hooshnic-artifacts stress-test-hooshnic smoke-test-hooshnic jmeter-ingest jmeter-hooshnic jmeter-hooshnic-batch jmeter-read jmeter-gui clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -101,12 +101,34 @@ load-test-go: build-loadtest ## Run load test via Go CLI (10K req/s default)
 
 load-test-high: build-loadtest ## Run intense load test (10K req/s, 60s)
 	@echo "Running high-intensity load test (10K req/s)..."
-	TARGET_URL=http://localhost:8080/api/gps/reports \
-	DURATION=60s \
-	WARMUP=10s \
-	RATE=10000 \
-	WORKERS=200 \
-	./scripts/load_test.sh
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		DURATION=60s \
+		WARMUP=10s \
+		RATE=10000 \
+		WORKERS=200 \
+		./scripts/load_test.sh
+
+load-test-hooshnic-batch: build-loadtest ## Run load test with 3-record Hooshnic batch payload
+	@echo "Running Hooshnic batch load test..."
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		PAYLOAD_FILE=jmeter/data/hooshnic-batch-3records.json \
+		RATE=500 DURATION=60s WORKERS=100 \
+		./scripts/load_test.sh
+
+load-test-hooshnic-artifacts: build-loadtest ## Run load test with trailing-dot Hooshnic payload
+	@echo "Running Hooshnic artifact payload load test..."
+	@TARGET_URL=http://localhost:8080/api/gps/reports \
+		PAYLOAD_FILE=jmeter/data/hooshnic-single-trailing-dots.body \
+		RATE=500 DURATION=60s WORKERS=100 \
+		./scripts/load_test.sh
+
+stress-test-hooshnic: build-loadtest ## Progressive stress test with Hooshnic batch payload
+	@chmod +x scripts/stress_test_hooshnic.sh
+	@./scripts/stress_test_hooshnic.sh
+
+smoke-test-hooshnic: ## Smoke-test Hooshnic sample payloads against running server
+	@chmod +x scripts/smoke_test_hooshnic.sh
+	@./scripts/smoke_test_hooshnic.sh
 
 coverage: ## Generate test coverage report
 	@echo "Generating coverage report..."
@@ -242,6 +264,21 @@ load-test: build-loadtest ## Run load test against running server (default 10K r
 	@echo "Running load test..."
 	@./scripts/load_test.sh
 
+jmeter-ingest: ## Run JMeter ingest load test (generic JSON, default 1000 req/s)
+	@./jmeter/scripts/run-jmeter.sh ingest
+
+jmeter-hooshnic: ## Run JMeter Hooshnic device load test (CSV payloads)
+	@./jmeter/scripts/run-jmeter.sh hooshnic
+
+jmeter-hooshnic-batch: ## Run JMeter Hooshnic batch load test (multi-record payloads)
+	@./jmeter/scripts/run-jmeter.sh hooshnic-batch
+
+jmeter-read: ## Run JMeter read APIs load test (requires seeded Postgres data)
+	@./jmeter/scripts/run-jmeter.sh read
+
+jmeter-gui: ## Open JMeter ingest test plan in GUI for editing
+	@./jmeter/scripts/run-jmeter.sh ingest --gui
+
 flush-queue: ## Flush the entire Redis queue
 	@echo "Flushing Redis queue..."
 	@if $(DOCKER_COMPOSE) ps -q redis >/dev/null 2>&1 && [ -n "$$($(DOCKER_COMPOSE) ps -q redis)" ]; then \
@@ -277,6 +314,12 @@ install-tools: ## Install development tools
 	@echo "Installing development tools..."
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	go install github.com/rakyll/hey@latest
+	@if command -v brew >/dev/null 2>&1; then \
+		echo "Installing JMeter via Homebrew..."; \
+		brew list jmeter >/dev/null 2>&1 || brew install jmeter; \
+	else \
+		echo "Install JMeter manually: https://jmeter.apache.org/download_jmeter.cgi"; \
+	fi
 	@echo "Tools installed"
 
 setup: deps ## Setup development environment

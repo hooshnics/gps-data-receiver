@@ -56,4 +56,8 @@ web/node_modules/
 web/dist/*
 !web/dist/.gitkeep
 
+# JMeter test output (keep directory via .gitkeep)
+jmeter/results/*
+!jmeter/results/.gitkeep
+
 .cursor/
