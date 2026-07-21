@@ -23,6 +23,8 @@ import (
 	"github.com/gps-data-receiver/internal/sanitizer"
 	"github.com/gps-data-receiver/internal/sender"
 	"github.com/gps-data-receiver/internal/storage"
+	teltonikacodec "github.com/gps-data-receiver/internal/teltonika/codec"
+	teltonikatcp "github.com/gps-data-receiver/internal/teltonika/tcp"
 	"github.com/gps-data-receiver/internal/tracking"
 	"github.com/gps-data-receiver/pkg/logger"
 	socketio "github.com/ismhdez/socket.io-golang/v4"
@@ -121,12 +123,16 @@ func main() {
 	messageHandler := func(ctx context.Context, data []byte) error {
 		start := time.Now()
 
-		// 1. Sanitize UTF-8 encoding
-		sanitized := sanitizer.SanitizeUTF8(data)
-
-		// 2. Parse GPS data
+		// 1. Parse GPS data (skip UTF-8 sanitize for binary Teltonika payloads)
 		parseStart := time.Now()
-		parseResult, err := parser.Parse(sanitized)
+		var parseResult parser.ParseResult
+		var err error
+		switch teltonikacodec.DetectFormat(data) {
+		case teltonikacodec.FormatTeltonikaQueued, teltonikacodec.FormatTeltonikaAVL:
+			parseResult, err = parser.ParseWithIMEI(data, "", cfg.Teltonika.TimezoneOffset)
+		default:
+			parseResult, err = parser.ParseWithIMEI(sanitizer.SanitizeUTF8(data), "", cfg.Teltonika.TimezoneOffset)
+		}
 		parseDuration := time.Since(parseStart)
 
 		enqueueInvalid := func(records []parser.InvalidRecord) {
@@ -330,7 +336,16 @@ func main() {
 	logger.Info("Socket.IO enabled at /socket.io/")
 
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore, cfg.Teltonika.TimezoneOffset)
+
+	// Teltonika TCP server for native device connections
+	teltonikaServer := teltonikatcp.NewServer(cfg.Teltonika, redisQueue)
+	if teltonikaServer != nil {
+		if err := teltonikaServer.Start(context.Background()); err != nil {
+			logger.Fatal("Failed to start Teltonika TCP server", zap.Error(err))
+		}
+		defer teltonikaServer.Stop()
+	}
 
 	// Setup routes
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
