@@ -57,12 +57,13 @@ var (
 	trailingCommaPattern   = regexp.MustCompile(`\},\s*\]`)
 )
 
-// Parse parses GPS data from JSON byte array into structured format.
+// Parse parses GPS data from JSON or Teltonika binary payloads.
 func Parse(data []byte) (ParseResult, error) {
-	if len(data) == 0 {
-		return ParseResult{}, fmt.Errorf("input data cannot be empty")
-	}
+	return ParseWithIMEI(data, "", defaultTimezoneOffset)
+}
 
+// parseHooshnicJSON parses the legacy Hooshnic text-in-JSON format.
+func parseHooshnicJSON(data []byte) (ParseResult, error) {
 	decodedData, decodeInvalid, err := decodeJSONData(string(data))
 	if err != nil {
 		return ParseResult{}, fmt.Errorf("failed to decode JSON data: %w", err)

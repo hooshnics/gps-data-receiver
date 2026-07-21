@@ -264,6 +264,11 @@ func ContentTypeMiddleware() gin.HandlerFunc {
 		}
 		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
 			contentType := c.GetHeader("Content-Type")
+			path := c.Request.URL.Path
+			if strings.HasPrefix(contentType, "application/octet-stream") && path == "/api/gps/reports" {
+				c.Next()
+				return
+			}
 			if contentType != "application/json" && contentType != "" {
 				requestID, _ := c.Get("request_id")
 

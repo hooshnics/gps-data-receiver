@@ -54,7 +54,7 @@ func setupBenchRouter(b *testing.B, q *queue.RedisQueue) *gin.Engine {
 	router.Use(api.RateLimitMiddleware(rateLimiter))
 	router.Use(api.ContentTypeMiddleware())
 
-	handler := api.NewHandler(q, 0, nil)
+	handler := api.NewHandler(q, 0, nil, 0)
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 	return router
 }
@@ -101,7 +101,7 @@ func BenchmarkReceiveGPSDataNoRateLimit(b *testing.B) {
 	router := gin.New()
 	router.Use(api.RequestIDMiddleware())
 	router.Use(api.ContentTypeMiddleware())
-	handler := api.NewHandler(q, 0, nil)
+	handler := api.NewHandler(q, 0, nil, 0)
 	router.POST("/api/gps/reports", handler.ReceiveGPSData)
 
 	body := benchPayload(1)

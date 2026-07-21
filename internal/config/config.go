@@ -12,17 +12,18 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server             ServerConfig
-	Redis              RedisConfig
-	Worker             WorkerConfig
-	Retry              RetryConfig
-	HTTP               HTTPConfig
-	RateLimit          RateLimitConfig
-	OutgoingRateLimit  OutgoingRateLimitConfig
-	Logging            LoggingConfig
-	Filter             FilterConfig
-	Tracking           TrackingConfig
-	Postgres           PostgresConfig
+	Server            ServerConfig
+	Redis             RedisConfig
+	Worker            WorkerConfig
+	Retry             RetryConfig
+	HTTP              HTTPConfig
+	RateLimit         RateLimitConfig
+	OutgoingRateLimit OutgoingRateLimitConfig
+	Logging           LoggingConfig
+	Filter            FilterConfig
+	Tracking          TrackingConfig
+	Postgres          PostgresConfig
+	Teltonika         TeltonikaConfig
 }
 
 // ServerConfig holds server configuration
@@ -110,6 +111,15 @@ type PostgresConfig struct {
 	SSLMode  string
 }
 
+// TeltonikaConfig holds Teltonika binary protocol settings.
+type TeltonikaConfig struct {
+	TCPEnabled     bool
+	TCPHost        string
+	TCPPort        string
+	TimezoneOffset time.Duration
+	IMEIWhitelist  []string
+}
+
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if not found)
@@ -134,7 +144,7 @@ func Load() (*Config, error) {
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
 		},
 		Worker: WorkerConfig{
-			Count:     getInt("WORKER_COUNT", 50), // Aligned with default outgoing rate limit
+			Count:     getInt("WORKER_COUNT", 50),       // Aligned with default outgoing rate limit
 			BatchSize: getInt("WORKER_BATCH_SIZE", 100), // Increased for 10K RPS
 		},
 		Retry: RetryConfig{
@@ -177,6 +187,13 @@ func Load() (*Config, error) {
 			Password: getEnv("POSTGRES_PASSWORD", "gps"),
 			DBName:   getEnv("POSTGRES_DB", "gps_receiver"),
 			SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
+		},
+		Teltonika: TeltonikaConfig{
+			TCPEnabled:     getBool("TELTONIKA_TCP_ENABLED", false),
+			TCPHost:        getEnv("TELTONIKA_TCP_HOST", "0.0.0.0"),
+			TCPPort:        getEnv("TELTONIKA_TCP_PORT", "5055"),
+			TimezoneOffset: getDuration("TELTONIKA_TIMEZONE_OFFSET", 3*time.Hour+30*time.Minute),
+			IMEIWhitelist:  getSlice("TELTONIKA_IMEI_WHITELIST", nil),
 		},
 	}
 

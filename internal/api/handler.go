@@ -1,13 +1,17 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gps-data-receiver/internal/metrics"
+	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
 	"github.com/gps-data-receiver/internal/storage"
 	"github.com/gps-data-receiver/internal/tracking"
@@ -86,6 +90,7 @@ type Handler struct {
 	queue             *queue.RedisQueue
 	backpressureLimit int64
 	store             *storage.PostgresStore
+	tzOffset          time.Duration
 
 	// Cached depth so we don't need a separate XLEN call on every request;
 	// updated atomically after each EnqueueWithDepth pipeline call.
@@ -93,11 +98,12 @@ type Handler struct {
 }
 
 // NewHandler creates a new handler. backpressureLimit is the queue depth at which to return 503 (0 = 90% of Redis MaxLen).
-func NewHandler(q *queue.RedisQueue, backpressureLimit int64, store *storage.PostgresStore) *Handler {
+func NewHandler(q *queue.RedisQueue, backpressureLimit int64, store *storage.PostgresStore, tzOffset time.Duration) *Handler {
 	h := &Handler{
 		queue:             q,
 		backpressureLimit: backpressureLimit,
 		store:             store,
+		tzOffset:          tzOffset,
 	}
 	return h
 }
@@ -122,6 +128,16 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 			tracking.GlobalTracker.UpdateStatus(requestID, tracking.StatusFailed, "Empty request body")
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Request body is empty"})
+		return
+	}
+
+	body, err = h.prepareBodyForQueue(c, body)
+	if err != nil {
+		logger.Warn("Invalid GPS payload", zap.Error(err))
+		if tracking.GlobalTracker != nil && requestID != "" {
+			tracking.GlobalTracker.UpdateStatus(requestID, tracking.StatusFailed, err.Error())
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -179,7 +195,30 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 	})
 }
 
-// readBody reads and returns the request body, sending an error response if it fails.
+// prepareBodyForQueue normalizes HTTP payloads before enqueue.
+// Binary Teltonika AVL over octet-stream is parsed and wrapped in a queue envelope.
+func (h *Handler) prepareBodyForQueue(c *gin.Context, body []byte) ([]byte, error) {
+	contentType := c.GetHeader("Content-Type")
+	if !strings.HasPrefix(contentType, "application/octet-stream") {
+		return body, nil
+	}
+
+	imei := c.GetHeader("X-Device-IMEI")
+	if imei == "" {
+		return nil, fmt.Errorf("X-Device-IMEI header is required for application/octet-stream payloads")
+	}
+
+	parseResult, err := parser.ParseWithIMEI(body, imei, h.tzOffset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Teltonika payload: %w", err)
+	}
+	if len(parseResult.Records) == 0 {
+		return nil, fmt.Errorf("no valid Teltonika records in payload")
+	}
+
+	return parser.ParseTeltonikaEnvelope(imei, parseResult.Records)
+}
+
 func readBody(c *gin.Context) ([]byte, error) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
