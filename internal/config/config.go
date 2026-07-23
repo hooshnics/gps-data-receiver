@@ -24,6 +24,20 @@ type Config struct {
 	Tracking          TrackingConfig
 	Postgres          PostgresConfig
 	Teltonika         TeltonikaConfig
+	Hooshnics         HooshnicsConfig
+}
+
+// HooshnicsConfig holds async mirror settings for the Hooshnics Laravel ingest API.
+// Independent from DESTINATION_SERVERS (PiStat) — enabling mirror must not alter PiStat flow.
+type HooshnicsConfig struct {
+	Enabled    bool
+	AuthToken  string
+	RawURL     string
+	ParsedURL  string
+	BufferSize int
+	SpillDir   string
+	Timeout    time.Duration
+	Workers    int
 }
 
 // ServerConfig holds server configuration
@@ -195,11 +209,30 @@ func Load() (*Config, error) {
 			TimezoneOffset: getDuration("TELTONIKA_TIMEZONE_OFFSET", 3*time.Hour+30*time.Minute),
 			IMEIWhitelist:  getSlice("TELTONIKA_IMEI_WHITELIST", nil),
 		},
+		Hooshnics: HooshnicsConfig{
+			Enabled:    getBoolAny([]string{"HOOSHNICS_MIRROR_ENABLED", "HOOSHNIX_MIRROR_ENABLED"}, false),
+			AuthToken:  getEnvAny([]string{"HOOSHNICS_AUTH_TOKEN", "HOOSHNIX_AUTH_TOKEN"}, ""),
+			RawURL:     getEnvAny([]string{"HOOSHNICS_RAW_URL", "HOOSHNIX_RAW_URL"}, ""),
+			ParsedURL:  getEnvAny([]string{"HOOSHNICS_PARSED_URL", "HOOSHNIX_PARSED_URL"}, ""),
+			BufferSize: getIntAny([]string{"HOOSHNICS_BUFFER_SIZE", "HOOSHNIX_BUFFER_SIZE"}, 50000),
+			SpillDir:   getEnvAny([]string{"HOOSHNICS_SPILL_DIR", "HOOSHNIX_SPILL_DIR"}, "logs/hooshnics_spill"),
+			Timeout:    getDurationAny([]string{"HOOSHNICS_TIMEOUT", "HOOSHNIX_TIMEOUT"}, 15*time.Second),
+			Workers:    getIntAny([]string{"HOOSHNICS_WORKERS", "HOOSHNIX_WORKERS"}, 4),
+		},
 	}
 
 	// Validate required fields
 	if len(config.HTTP.DestinationServers) == 0 {
 		return nil, fmt.Errorf("DESTINATION_SERVERS must be configured")
+	}
+
+	if config.Hooshnics.Enabled {
+		if config.Hooshnics.AuthToken == "" {
+			return nil, fmt.Errorf("HOOSHNICS_AUTH_TOKEN is required when HOOSHNICS_MIRROR_ENABLED=true")
+		}
+		if config.Hooshnics.RawURL == "" && config.Hooshnics.ParsedURL == "" {
+			return nil, fmt.Errorf("HOOSHNICS_RAW_URL or HOOSHNICS_PARSED_URL is required when HOOSHNICS_MIRROR_ENABLED=true")
+		}
 	}
 
 	// Keep worker count within outgoing rate limit so workers are not blocked waiting on limiter.
@@ -218,6 +251,64 @@ func getEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+// getEnvAny returns the first non-empty env value among keys, else defaultValue.
+func getEnvAny(keys []string, defaultValue string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+	}
+	return defaultValue
+}
+
+// getBoolAny returns the first successfully parsed bool among keys, else defaultValue.
+func getBoolAny(keys []string, defaultValue bool) bool {
+	for _, key := range keys {
+		valueStr := os.Getenv(key)
+		if valueStr == "" {
+			continue
+		}
+		value, err := strconv.ParseBool(valueStr)
+		if err != nil {
+			continue
+		}
+		return value
+	}
+	return defaultValue
+}
+
+// getIntAny returns the first successfully parsed int among keys, else defaultValue.
+func getIntAny(keys []string, defaultValue int) int {
+	for _, key := range keys {
+		valueStr := os.Getenv(key)
+		if valueStr == "" {
+			continue
+		}
+		value, err := strconv.Atoi(valueStr)
+		if err != nil {
+			continue
+		}
+		return value
+	}
+	return defaultValue
+}
+
+// getDurationAny returns the first successfully parsed duration among keys, else defaultValue.
+func getDurationAny(keys []string, defaultValue time.Duration) time.Duration {
+	for _, key := range keys {
+		valueStr := os.Getenv(key)
+		if valueStr == "" {
+			continue
+		}
+		value, err := time.ParseDuration(valueStr)
+		if err != nil {
+			continue
+		}
+		return value
+	}
+	return defaultValue
 }
 
 // getInt gets an integer environment variable or returns a default value

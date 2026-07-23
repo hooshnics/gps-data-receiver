@@ -91,19 +91,29 @@ type Handler struct {
 	backpressureLimit int64
 	store             *storage.PostgresStore
 	tzOffset          time.Duration
+	// Optional async Hooshnics raw mirror. Nil-safe; must never block PiStat enqueue path.
+	mirror HooshnicsRawMirror
 
 	// Cached depth so we don't need a separate XLEN call on every request;
 	// updated atomically after each EnqueueWithDepth pipeline call.
 	cachedDepth atomic.Int64
 }
 
+// HooshnicsRawMirror is implemented by internal/hooshnics.Forwarder.
+// Defined here as an interface so api does not import hooshnics (no circular deps).
+type HooshnicsRawMirror interface {
+	ForwardHTTPBody(body []byte, imei, contentType string)
+}
+
 // NewHandler creates a new handler. backpressureLimit is the queue depth at which to return 503 (0 = 90% of Redis MaxLen).
-func NewHandler(q *queue.RedisQueue, backpressureLimit int64, store *storage.PostgresStore, tzOffset time.Duration) *Handler {
+// mirror may be nil to disable Hooshnics forwarding.
+func NewHandler(q *queue.RedisQueue, backpressureLimit int64, store *storage.PostgresStore, tzOffset time.Duration, mirror HooshnicsRawMirror) *Handler {
 	h := &Handler{
 		queue:             q,
 		backpressureLimit: backpressureLimit,
 		store:             store,
 		tzOffset:          tzOffset,
+		mirror:            mirror,
 	}
 	return h
 }
@@ -117,6 +127,15 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 	if err != nil {
 		return
 	}
+
+	// Exact copy for Hooshnics raw mirror (before local queue normalization). Forward is async/non-blocking.
+	rawForMirror := append([]byte(nil), body...)
+	mirrorIMEI := firstNonEmpty(
+		c.GetHeader("X-Device-Imei"),
+		c.GetHeader("X-Device-IMEI"),
+		c.GetHeader("X-Gps-Imei"),
+	)
+	mirrorContentType := c.GetHeader("Content-Type")
 
 	if tracking.GlobalTracker != nil && requestID != "" {
 		tracking.GlobalTracker.TrackRequest(requestID, clientIP, body)
@@ -183,6 +202,11 @@ func (h *Handler) ReceiveGPSData(c *gin.Context) {
 
 	if tracking.GlobalTracker != nil && requestID != "" {
 		tracking.GlobalTracker.UpdateStatus(requestID, tracking.StatusQueued, "Enqueued successfully")
+	}
+
+	// Fire-and-forget mirror AFTER successful Redis enqueue so PiStat path is never delayed/blocked.
+	if h.mirror != nil {
+		h.mirror.ForwardHTTPBody(rawForMirror, mirrorIMEI, mirrorContentType)
 	}
 
 	logger.Debug("GPS data received and queued",
@@ -306,4 +330,13 @@ func (h *Handler) GetStatistics(c *gin.Context) {
 // GetCachedDepth returns the last-known queue depth. Used by main for metrics without extra Redis calls.
 func (h *Handler) GetCachedDepth() int64 {
 	return h.cachedDepth.Load()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

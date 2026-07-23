@@ -17,10 +17,17 @@ type Enqueuer interface {
 	Enqueue(ctx context.Context, data []byte) (string, error)
 }
 
+// HooshnicsRawMirror is implemented by internal/hooshnics.Forwarder.
+// Interface keeps tcp free of a hard import on hooshnics (no circular deps).
+type HooshnicsRawMirror interface {
+	ForwardTeltonikaAVL(imei string, frame []byte)
+}
+
 // Server accepts Teltonika device TCP connections.
 type Server struct {
 	cfg       config.TeltonikaConfig
 	queue     Enqueuer
+	mirror    HooshnicsRawMirror
 	listener  net.Listener
 	wg        sync.WaitGroup
 	cancel    context.CancelFunc
@@ -28,7 +35,8 @@ type Server struct {
 }
 
 // NewServer creates a Teltonika TCP server. Returns nil if TCP is disabled.
-func NewServer(cfg config.TeltonikaConfig, q Enqueuer) *Server {
+// mirror may be nil to disable Hooshnics forwarding.
+func NewServer(cfg config.TeltonikaConfig, q Enqueuer, mirror HooshnicsRawMirror) *Server {
 	if !cfg.TCPEnabled {
 		return nil
 	}
@@ -41,6 +49,7 @@ func NewServer(cfg config.TeltonikaConfig, q Enqueuer) *Server {
 	return &Server{
 		cfg:       cfg,
 		queue:     q,
+		mirror:    mirror,
 		imeiAllow: allow,
 	}
 }
