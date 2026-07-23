@@ -61,3 +61,4 @@ jmeter/results/*
 !jmeter/results/.gitkeep
 
 .cursor/
+.cursor/plans/ 
