@@ -54,7 +54,7 @@ func TestTCPServer_IMEIHandshakeAndAVL(t *testing.T) {
 		TCPHost:        "127.0.0.1",
 		TCPPort:        port,
 		TimezoneOffset: 3*time.Hour + 30*time.Minute,
-	}, enqueue)
+	}, enqueue, nil)
 	require.NotNil(t, srv)
 	require.NoError(t, srv.Start(context.Background()))
 	defer srv.Stop()

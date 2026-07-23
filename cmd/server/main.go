@@ -17,6 +17,7 @@ import (
 	"github.com/gps-data-receiver/internal/api"
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/internal/filter"
+	"github.com/gps-data-receiver/internal/hooshnics"
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
@@ -92,6 +93,27 @@ func main() {
 	logger.Info("Stoppage filter initialized",
 		zap.Bool("enabled", cfg.Filter.Enabled),
 		zap.Duration("sync_interval", cfg.Filter.RedisSyncInterval))
+
+	// Hooshnics async mirror — isolated from PiStat DESTINATION_SERVERS path.
+	hooshnicsForwarder, err := hooshnics.NewForwarder(hooshnics.Config{
+		Enabled:    cfg.Hooshnics.Enabled,
+		AuthToken:  cfg.Hooshnics.AuthToken,
+		RawURL:     cfg.Hooshnics.RawURL,
+		ParsedURL:  cfg.Hooshnics.ParsedURL,
+		BufferSize: cfg.Hooshnics.BufferSize,
+		SpillDir:   cfg.Hooshnics.SpillDir,
+		Timeout:    cfg.Hooshnics.Timeout,
+		Workers:    cfg.Hooshnics.Workers,
+	})
+	if err != nil {
+		logger.Fatal("Failed to initialize Hooshnics mirror", zap.Error(err))
+	}
+	if hooshnicsForwarder != nil {
+		hooshnicsForwarder.Start()
+		defer hooshnicsForwarder.Close()
+	} else {
+		logger.Info("Hooshnics mirror disabled")
+	}
 
 	// Socket.IO for real-time delivery status broadcast. Created early so messageHandler can emit delivery events.
 	io := socketio.New()
@@ -229,6 +251,11 @@ func main() {
 			return nil // Return nil to ACK and drop the message
 		}
 
+		// Optional async parsed mirror — does not block or alter PiStat send below.
+		if hooshnicsForwarder != nil {
+			hooshnicsForwarder.ForwardParsed(jsonData)
+		}
+
 		// 6. Send filtered data to destination servers
 		deliveryID := uuid.New().String()
 		emitDelivery := func(status, targetServer string) {
@@ -336,10 +363,10 @@ func main() {
 	logger.Info("Socket.IO enabled at /socket.io/")
 
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
-	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore, cfg.Teltonika.TimezoneOffset)
+	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore, cfg.Teltonika.TimezoneOffset, hooshnicsForwarder)
 
 	// Teltonika TCP server for native device connections
-	teltonikaServer := teltonikatcp.NewServer(cfg.Teltonika, redisQueue)
+	teltonikaServer := teltonikatcp.NewServer(cfg.Teltonika, redisQueue, hooshnicsForwarder)
 	if teltonikaServer != nil {
 		if err := teltonikaServer.Start(context.Background()); err != nil {
 			logger.Fatal("Failed to start Teltonika TCP server", zap.Error(err))

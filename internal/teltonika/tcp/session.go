@@ -126,6 +126,11 @@ func (s *session) readFrame() ([]byte, error) {
 }
 
 func (s *session) handleFrame(ctx context.Context, imei string, frame []byte) uint32 {
+	// Async Hooshnics mirror first (non-blocking). Does not affect local parse/enqueue/ACK for PiStat.
+	if s.server.mirror != nil {
+		s.server.mirror.ForwardTeltonikaAVL(imei, frame)
+	}
+
 	_, records, err := codec.ParsePacket(frame)
 	if err != nil {
 		logger.Warn("Teltonika packet parse failed",
