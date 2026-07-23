@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/gps-data-receiver/internal/config"
 	"github.com/gps-data-receiver/pkg/logger"
@@ -29,9 +28,11 @@ type Server struct {
 	queue     Enqueuer
 	mirror    HooshnicsRawMirror
 	listener  net.Listener
-	wg        sync.WaitGroup
+	wg        sync.WaitGroup // accept loop + sessions
+	pipelineWG sync.WaitGroup
 	cancel    context.CancelFunc
 	imeiAllow map[string]struct{}
+	jobs      chan postAckJob
 }
 
 // NewServer creates a Teltonika TCP server. Returns nil if TCP is disabled.
@@ -62,15 +63,18 @@ func (s *Server) isIMEIAllowed(imei string) bool {
 	return ok
 }
 
-// Start listens for incoming device connections.
+// Start listens for incoming device connections and starts the post-ACK worker pool.
 func (s *Server) Start(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
 
+	s.startPipeline()
+
 	addr := fmt.Sprintf("%s:%s", s.cfg.TCPHost, s.cfg.TCPPort)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		s.stopPipeline()
 		return fmt.Errorf("teltonika tcp listen: %w", err)
 	}
 
@@ -92,6 +96,7 @@ func (s *Server) Start(ctx context.Context) error {
 					continue
 				}
 			}
+			s.configureConn(conn)
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
@@ -104,7 +109,15 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop closes the listener and waits for active sessions.
+func (s *Server) configureConn(conn net.Conn) {
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(defaultKeepAlivePeriod)
+		_ = tc.SetNoDelay(true)
+	}
+}
+
+// Stop closes the listener, waits for sessions, then drains the post-ACK pipeline.
 func (s *Server) Stop() {
 	if s == nil {
 		return
@@ -116,16 +129,17 @@ func (s *Server) Stop() {
 		_ = s.listener.Close()
 	}
 	s.wg.Wait()
+	s.stopPipeline()
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Time{})
 
 	sess := &session{
 		conn:     conn,
 		server:   s,
-		readTO:   60 * time.Second,
+		readTO:   defaultReadTimeout,
+		writeTO:  defaultWriteTimeout,
 		tzOffset: s.cfg.TimezoneOffset,
 	}
 	sess.run(ctx)

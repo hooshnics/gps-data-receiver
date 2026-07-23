@@ -18,6 +18,7 @@ type session struct {
 	conn     net.Conn
 	server   *Server
 	readTO   time.Duration
+	writeTO  time.Duration
 	tzOffset time.Duration
 }
 
@@ -32,14 +33,14 @@ func (s *session) run(ctx context.Context) {
 	}
 
 	if !s.server.isIMEIAllowed(imei) {
-		_, _ = s.conn.Write([]byte{0x00})
+		_ = s.writeBytes([]byte{0x00})
 		logger.Warn("Teltonika IMEI rejected",
 			zap.String("remote", remote),
 			zap.String("imei", imei))
 		return
 	}
 
-	if _, err := s.conn.Write([]byte{0x01}); err != nil {
+	if err := s.writeBytes([]byte{0x01}); err != nil {
 		logger.Debug("Teltonika IMEI accept write failed", zap.Error(err))
 		return
 	}
@@ -65,12 +66,16 @@ func (s *session) run(ctx context.Context) {
 			return
 		}
 
-		accepted := s.handleFrame(ctx, imei, frame)
+		// Hot path: parse/validate → ACK immediately → async Redis/mirror.
+		accepted, job := s.validateFrame(imei, frame)
 		if err := s.writeAck(accepted); err != nil {
 			logger.Debug("Teltonika ack write failed",
 				zap.String("imei", imei),
 				zap.Error(err))
 			return
+		}
+		if job != nil {
+			s.server.submitPostAck(*job)
 		}
 	}
 }
@@ -125,23 +130,20 @@ func (s *session) readFrame() ([]byte, error) {
 	return frame, nil
 }
 
-func (s *session) handleFrame(ctx context.Context, imei string, frame []byte) uint32 {
-	// Async Hooshnics mirror first (non-blocking). Does not affect local parse/enqueue/ACK for PiStat.
-	if s.server.mirror != nil {
-		s.server.mirror.ForwardTeltonikaAVL(imei, frame)
-	}
-
+// validateFrame parses and builds the Redis envelope on the hot path (CPU only).
+// It does NOT enqueue to Redis or call HTTP. Returns ACK count and an optional post-ACK job.
+func (s *session) validateFrame(imei string, frame []byte) (uint32, *postAckJob) {
 	_, records, err := codec.ParsePacket(frame)
 	if err != nil {
 		logger.Warn("Teltonika packet parse failed",
 			zap.String("imei", imei),
 			zap.Error(err))
-		return 0
+		return 0, nil
 	}
 
 	parsed := parser.TeltonikaRecordsToParsed(records, imei, s.tzOffset)
 	if len(parsed) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	envelope, err := parser.ParseTeltonikaEnvelope(imei, parsed)
@@ -149,25 +151,30 @@ func (s *session) handleFrame(ctx context.Context, imei string, frame []byte) ui
 		logger.Error("Teltonika envelope marshal failed",
 			zap.String("imei", imei),
 			zap.Error(err))
-		return 0
+		return 0, nil
 	}
 
-	if _, err := s.server.queue.Enqueue(ctx, envelope); err != nil {
-		logger.Error("Teltonika enqueue failed",
-			zap.String("imei", imei),
-			zap.Error(err))
-		// ACK accepted records anyway; device should not resend valid data.
+	// Copy frame for async workers; session may reuse/overwrite buffers later.
+	frameCopy := append([]byte(nil), frame...)
+	return uint32(len(parsed)), &postAckJob{
+		imei:     imei,
+		frame:    frameCopy,
+		envelope: envelope,
 	}
-
-	return uint32(len(parsed))
 }
 
 func (s *session) writeAck(count uint32) error {
-	if err := s.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
-	}
 	ack := make([]byte, 4)
 	binary.BigEndian.PutUint32(ack, count)
-	_, err := s.conn.Write(ack)
+	return s.writeBytes(ack)
+}
+
+func (s *session) writeBytes(b []byte) error {
+	if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTO)); err != nil {
+		return err
+	}
+	_, err := s.conn.Write(b)
+	// Clear write deadline so a stalled peer cannot poison the next read window.
+	_ = s.conn.SetWriteDeadline(time.Time{})
 	return err
 }

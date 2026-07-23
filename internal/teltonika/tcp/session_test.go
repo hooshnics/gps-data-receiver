@@ -84,6 +84,8 @@ func TestTCPServer_IMEIHandshakeAndAVL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint32(3), binary.BigEndian.Uint32(ackBuf))
 
-	require.Len(t, enqueue.payloads, 1)
+	require.Eventually(t, func() bool {
+		return len(enqueue.payloads) == 1
+	}, 2*time.Second, 10*time.Millisecond)
 	require.Contains(t, string(enqueue.payloads[0]), `"_teltonika":true`)
 }
