@@ -1,0 +1,38 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "component"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = critical
+      receiver: critical
+      continue: true
+    - matchers:
+        - severity = warning
+      receiver: default
+
+inhibit_rules:
+  - source_matchers:
+      - alertname = GPSReceiverDown
+    target_matchers:
+      - component = ingest
+    equal: ["service"]
+
+receivers:
+  # Replace webhook URLs / email with your ops channel before production go-live.
+  - name: default
+    webhook_configs:
+      - url: "http://127.0.0.1:5001/webhook"
+        send_resolved: true
+        max_alerts: 10
+
+  - name: critical
+    webhook_configs:
+      - url: "http://127.0.0.1:5001/webhook"
+        send_resolved: true
+        max_alerts: 20

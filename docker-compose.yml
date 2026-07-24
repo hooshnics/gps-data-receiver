@@ -17,19 +17,21 @@ x-healthcheck-defaults: &healthcheck-defaults
   start_period: 10s
 
 services:
+  # Redis primary (durable ingest target for Zero-Drop XADD).
   redis:
     image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/redis:7.4-alpine
     container_name: gps-redis
     pull_policy: if_not_present
     ports:
       - "127.0.0.1:6379:6379"
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --maxclients 10000
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    volumes:
+      - redis-data:/data
+      - ./docker/redis/redis-primary.conf:/etc/redis/redis.conf:ro
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
-    volumes:
-      - redis-data:/data
     networks:
       - gps-network
     restart: unless-stopped
@@ -39,6 +41,103 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  # Redis replica — promoted by Sentinel on primary failure.
+  redis-replica:
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/redis:7.4-alpine
+    container_name: gps-redis-replica
+    pull_policy: if_not_present
+    ports:
+      - "127.0.0.1:6380:6379"
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    volumes:
+      - redis-replica-data:/data
+      - ./docker/redis/redis-replica.conf:/etc/redis/redis.conf:ro
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - gps-network
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  # Sentinel quorum (3 nodes) for automatic failover. App connects via Sentinels.
+  redis-sentinel-1: &redis-sentinel
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/redis:7.4-alpine
+    container_name: gps-redis-sentinel-1
+    hostname: redis-sentinel-1
+    pull_policy: if_not_present
+    command:
+      - sh
+      - -c
+      - |
+        cp /etc/redis/sentinel.conf /tmp/sentinel.conf
+        echo 'sentinel announce-ip redis-sentinel-1' >> /tmp/sentinel.conf
+        echo 'sentinel announce-port 26379' >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
+    volumes:
+      - ./docker/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    networks:
+      - gps-network
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis-sentinel-2:
+    <<: *redis-sentinel
+    container_name: gps-redis-sentinel-2
+    hostname: redis-sentinel-2
+    command:
+      - sh
+      - -c
+      - |
+        cp /etc/redis/sentinel.conf /tmp/sentinel.conf
+        echo 'sentinel announce-ip redis-sentinel-2' >> /tmp/sentinel.conf
+        echo 'sentinel announce-port 26379' >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
+
+  redis-sentinel-3:
+    <<: *redis-sentinel
+    container_name: gps-redis-sentinel-3
+    hostname: redis-sentinel-3
+    command:
+      - sh
+      - -c
+      - |
+        cp /etc/redis/sentinel.conf /tmp/sentinel.conf
+        echo 'sentinel announce-ip redis-sentinel-3' >> /tmp/sentinel.conf
+        echo 'sentinel announce-port 26379' >> /tmp/sentinel.conf
+        redis-sentinel /tmp/sentinel.conf
 
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
@@ -83,6 +182,7 @@ services:
     container_name: gps-receiver
     init: true
     pull_policy: build
+    stop_grace_period: 90s
     ports:
       - "8080:8080"
       - "5055:5055"
@@ -98,9 +198,19 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ""
       REDIS_DB: "0"
+      # Prefer Sentinel HA when available (failover without app restart).
+      REDIS_SENTINEL_MASTER: mymaster
+      REDIS_SENTINEL_ADDRS: redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_STREAM_NAME: gps:reports
       REDIS_CONSUMER_GROUP: gps-workers
       REDIS_MAX_LEN: "10000"
+      REDIS_RAW_STREAM: gps:raw_incoming
+      REDIS_RAW_CONSUMER_GROUP: gps-raw-workers
+      REDIS_RAW_MAX_LEN: "0"
+      REDIS_DEAD_LETTER_STREAM: gps:dead_letter
+      REDIS_HOOSHNICS_RETRY_STREAM: gps:hooshnics_retry
+      REDIS_PISTAT_RETRY_STREAM: gps:pistat_retry
+      REDIS_DEDUPE_TTL: 24h
       WORKER_COUNT: "50"
       WORKER_BATCH_SIZE: "50"
       MAX_RETRY_ATTEMPTS: "3"
@@ -109,12 +219,14 @@ services:
       HTTP_CLIENT_TIMEOUT: "15s"
       HTTP_CLIENT_MAX_IDLE_CONNS: "200"
       HTTP_CLIENT_MAX_CONNS_PER_HOST: "60"
-      REDIS_POOL_SIZE: "200"
+      REDIS_POOL_SIZE: "300"
       RATE_LIMIT_REQUESTS_PER_SECOND: "1000"
       RATE_LIMIT_BURST: "2000"
       LOG_LEVEL: info
       LOG_FORMAT: json
-      ENVIRONMENT: production
+      # Local Compose is a lab environment (not public production).
+      ENVIRONMENT: development
+      GPS_LAB_MODE: "true"
       POSTGRES_ENABLED: "true"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -126,8 +238,22 @@ services:
       TELTONIKA_TCP_HOST: "0.0.0.0"
       TELTONIKA_TCP_PORT: "5055"
       TELTONIKA_TIMEZONE_OFFSET: "3h30m"
+      ARCHIVE_ENABLED: "true"
+      ARCHIVE_DIR: /var/lib/gps-archive
+      ARCHIVE_STRICT: "false"
+      # Do not set user: "1000:1000" here — entrypoint must start as root to chown the archive volume, then drops to appuser.
+    volumes:
+      - archive-data:/var/lib/gps-archive
     depends_on:
       redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -204,6 +330,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -221,11 +348,49 @@ services:
         condition: service_healthy
       cadvisor:
         condition: service_healthy
+      redis-exporter:
+        condition: service_started
+      alertmanager:
+        condition: service_started
     security_opt:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9090/-/healthy"]
       <<: *healthcheck-defaults
+
+  redis-exporter:
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/oliver006/redis_exporter:v1.67.0
+    container_name: gps-redis-exporter
+    pull_policy: if_not_present
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    networks:
+      - gps-network
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9121:9121"
+    security_opt:
+      - no-new-privileges:true
+
+  alertmanager:
+    image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/prom/alertmanager:v0.28.1
+    container_name: gps-alertmanager
+    pull_policy: if_not_present
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    networks:
+      - gps-network
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   grafana:
     image: ${DOCKER_REGISTRY:-docker.arvancloud.ir}/grafana/grafana:11.6.1
@@ -273,6 +438,8 @@ networks:
 
 volumes:
   redis-data:
+  redis-replica-data:
   postgres-data:
   prometheus-data:
   grafana-data:
+  archive-data:

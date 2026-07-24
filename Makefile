@@ -1,4 +1,4 @@
-.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go load-test-hooshnic-batch load-test-hooshnic-artifacts stress-test-hooshnic smoke-test-hooshnic jmeter-ingest jmeter-hooshnic jmeter-hooshnic-batch jmeter-read jmeter-gui clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
+.PHONY: help build build-loadtest run test test-unit test-integration test-all benchmark benchmark-handler load-test load-test-high load-test-go load-test-hooshnic-batch load-test-hooshnic-artifacts stress-test-hooshnic smoke-test-hooshnic jmeter-ingest jmeter-hooshnic jmeter-hooshnic-batch jmeter-read jmeter-gui teltonika-sim ack-latency-bench replay clean fmt lint vendor docker-build docker-build-clean docker-up docker-down docker-logs docker-watch flush-queue flush-database clear-queue clear-database web-install web-build web-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -95,6 +95,18 @@ build-loadtest: ## Build the high-throughput load test CLI
 	@mkdir -p bin
 	$(GOBUILD) -o bin/loadtest ./cmd/loadtest
 	@echo "Build complete: bin/loadtest"
+
+teltonika-sim: ## Build Teltonika fleet load simulator
+	@mkdir -p bin
+	$(GOBUILD) -o bin/teltonika-simulator ./cmd/teltonika-simulator
+
+ack-latency-bench: ## Build ACK latency benchmark (CRC→XADD→ACK)
+	@mkdir -p bin
+	$(GOBUILD) -o bin/ack-latency-bench ./cmd/ack-latency-bench
+
+replay: ## Build offline telemetry replay / recovery CLI
+	@mkdir -p bin
+	$(GOBUILD) -o bin/replay ./cmd/replay
 
 load-test-go: build-loadtest ## Run load test via Go CLI (10K req/s default)
 	@./bin/loadtest

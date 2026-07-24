@@ -15,9 +15,12 @@ import (
 	gojson "github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gps-data-receiver/internal/api"
+	archivelib "github.com/gps-data-receiver/internal/archive"
 	"github.com/gps-data-receiver/internal/config"
+	"github.com/gps-data-receiver/internal/device"
 	"github.com/gps-data-receiver/internal/filter"
 	"github.com/gps-data-receiver/internal/hooshnics"
+	"github.com/gps-data-receiver/internal/ingest"
 	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/internal/queue"
@@ -51,6 +54,18 @@ func main() {
 	logger.Info("Starting GPS Data Receiver",
 		zap.String("environment", os.Getenv("ENVIRONMENT")),
 		zap.String("version", "1.0.0"))
+
+	if strings.EqualFold(os.Getenv("ENVIRONMENT"), "production") {
+		if cfg.Redis.Password == "" {
+			logger.Warn("SECURITY: REDIS_PASSWORD is empty in production — Redis must not be reachable outside the trusted network")
+		}
+		if cfg.Teltonika.TCPEnabled && len(cfg.Teltonika.IMEIWhitelist) == 0 {
+			logger.Warn("SECURITY: TELTONIKA_IMEI_WHITELIST is empty — TCP :5055 accepts any IMEI; restrict via firewall and/or whitelist")
+		}
+		if cfg.Postgres.Enabled && (cfg.Postgres.Password == "" || cfg.Postgres.Password == "gps") {
+			logger.Warn("SECURITY: PostgreSQL is using a default/empty password — rotate credentials for production")
+		}
+	}
 
 	// Initialize metrics
 	metrics.InitMetrics()
@@ -109,6 +124,7 @@ func main() {
 		logger.Fatal("Failed to initialize Hooshnics mirror", zap.Error(err))
 	}
 	if hooshnicsForwarder != nil {
+		hooshnicsForwarder.SetRetrySink(redisQueue)
 		hooshnicsForwarder.Start()
 		defer hooshnicsForwarder.Close()
 	} else {
@@ -172,7 +188,7 @@ func main() {
 		if err != nil {
 			logger.Error("Failed to parse GPS data - dropping message",
 				zap.Error(err),
-				zap.String("raw_data", string(data)))
+				zap.Int("payload_bytes", len(data)))
 			storeFullInvalidPayload(err.Error())
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordParseFailure()
@@ -190,7 +206,7 @@ func main() {
 		// Handle empty parse results
 		if len(parsed) == 0 {
 			logger.Warn("No valid GPS records found - dropping message",
-				zap.String("raw_data", string(data)))
+				zap.Int("payload_bytes", len(data)))
 			if len(parseResult.Invalid) == 0 {
 				storeFullInvalidPayload("no valid GPS records found")
 			}
@@ -295,11 +311,19 @@ func main() {
 				}
 				postgresWriter.EnqueueFailed(filteredData, result.TargetServer, errMsg)
 			}
-			logger.Warn("Send failed, message will be retried via queue redelivery",
+			// Zero-loss: park on retry stream instead of dropping or blocking forever.
+			if parkErr := redisQueue.EnqueuePistatRetry(ctx, jsonData, result.Attempt); parkErr != nil {
+				logger.Warn("PiStat retry park failed — leaving message for queue redelivery",
+					zap.String("target_server", result.TargetServer),
+					zap.Error(parkErr),
+					zap.Error(result.Error))
+				return result.Error
+			}
+			logger.Warn("PiStat send exhausted — payload moved to gps:pistat_retry",
 				zap.String("target_server", result.TargetServer),
 				zap.Int("attempts", result.Attempt),
 				zap.Error(result.Error))
-			return result.Error
+			return nil
 		}
 
 		emitDelivery("delivered", result.TargetServer)
@@ -311,8 +335,7 @@ func main() {
 		return nil
 	}
 
-	// Initialize consumer with worker pool.
-	// maxRetries controls total queue delivery attempts before a message is dropped.
+	// Initialize consumer with worker pool (HTTP / legacy gps:reports path).
 	consumer := queue.NewConsumer(
 		redisQueue,
 		cfg.Worker.Count,
@@ -320,10 +343,71 @@ func main() {
 		cfg.Retry.MaxAttempts,
 		messageHandler,
 	)
-
-	// Start consumer workers
 	consumer.Start()
-	logger.Info("Worker pool started", zap.Int("workers", cfg.Worker.Count))
+	logger.Info("Worker pool started (gps:reports)", zap.Int("workers", cfg.Worker.Count))
+
+	// Durable Teltonika raw ingest consumers (gps:raw_incoming).
+	var emitAdapter ingest.DeliveryEmitter
+	if asyncBroadcaster != nil {
+		emitAdapter = ingest.BroadcasterAdapter{EmitFn: asyncBroadcaster.Emit}
+	}
+	rawProcessor := &ingest.Processor{
+		Queue:      redisQueue,
+		Mirror:     hooshnicsForwarder,
+		Sender:     httpSender,
+		Filter:     stoppageFilter,
+		Postgres:   postgresWriter,
+		Emitter:    emitAdapter,
+		TZOffset:   cfg.Teltonika.TimezoneOffset,
+		Drivers:    device.DefaultRegistry(cfg.Teltonika.TimezoneOffset),
+		ForwardRaw: cfg.Hooshnics.ForwardRaw,
+	}
+	logger.Info("Hoosh IoT Gateway raw processor ready",
+		zap.Bool("hooshnics_forward_raw", cfg.Hooshnics.ForwardRaw),
+		zap.Bool("hooshnics_mirror", hooshnicsForwarder != nil))
+	rawConsumer := queue.NewRawConsumer(
+		redisQueue,
+		cfg.Worker.Count,
+		cfg.Worker.BatchSize,
+		rawProcessor.ProcessRawAVL,
+	)
+	if cfg.Archive.Enabled {
+		aw, err := archivelib.NewWriter(cfg.Archive.Dir, cfg.Archive.Strict)
+		if err != nil {
+			logger.Fatal("Failed to initialize raw archive writer", zap.Error(err))
+		}
+		rawConsumer.SetArchiver(aw)
+		defer aw.Close()
+		logger.Info("Raw AVL archive enabled",
+			zap.String("dir", cfg.Archive.Dir),
+			zap.Bool("strict", cfg.Archive.Strict))
+	}
+	rawConsumer.Start()
+	defer rawConsumer.Stop()
+	logger.Info("Raw ingest worker pool started (gps:raw_incoming)", zap.Int("workers", cfg.Worker.Count))
+
+	retryConsumers := queue.NewRetryConsumers(redisQueue, httpSender, nil, cfg.Hooshnics.AuthToken)
+	retryConsumers.Start()
+	defer retryConsumers.Stop()
+
+	// Lightweight durable-stream depth / pending gauges for Prometheus.
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			raw, pistat, hoosh, dlq, err := redisQueue.StreamDepths(ctx)
+			pending, perr := redisQueue.RawPendingCount(ctx)
+			cancel()
+			if err == nil && perr == nil && metrics.AppMetrics != nil {
+				metrics.AppMetrics.UpdateDurableStreamDepths(raw, pending, pistat, hoosh, dlq)
+			}
+			if postgresStore != nil && metrics.AppMetrics != nil {
+				st := postgresStore.PoolStats()
+				metrics.AppMetrics.UpdatePostgresPool(st.OpenConnections, st.InUse, st.MaxOpenConnections)
+			}
+		}
+	}()
 
 	// Initialize worker metrics with correct pool size
 	if metrics.AppMetrics != nil {
@@ -365,8 +449,8 @@ func main() {
 	// Initialize handler (with backpressure limit from config; 0 = use 90% of Redis MaxLen)
 	handler := api.NewHandler(redisQueue, cfg.Redis.QueueBackpressureLimit, postgresStore, cfg.Teltonika.TimezoneOffset, hooshnicsForwarder)
 
-	// Teltonika TCP server for native device connections
-	teltonikaServer := teltonikatcp.NewServer(cfg.Teltonika, redisQueue, hooshnicsForwarder)
+	// Teltonika TCP: durable Redis XADD before ACK (zero-loss).
+	teltonikaServer := teltonikatcp.NewServer(cfg.Teltonika, redisQueue)
 	if teltonikaServer != nil {
 		if err := teltonikaServer.Start(context.Background()); err != nil {
 			logger.Fatal("Failed to start Teltonika TCP server", zap.Error(err))
@@ -513,14 +597,20 @@ func main() {
 
 	logger.Info("Shutting down server...")
 
-	// Graceful shutdown with timeout
+	// Ordered graceful shutdown (zero-loss):
+	// 1) stop accepting new Teltonika TCP (defer Stop already registered — call explicitly first)
+	// 2) stop raw / reports / retry consumers after in-flight finish
+	// 3) stop HTTP
+	if teltonikaServer != nil {
+		teltonikaServer.Stop()
+	}
+	rawConsumer.Stop()
+	consumer.Stop()
+	retryConsumers.Stop()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Stop consumer workers first
-	consumer.Stop()
-
-	// Shutdown HTTP server
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("Server forced to shutdown", zap.Error(err))
 	}

@@ -43,8 +43,14 @@ type HTTPSender struct {
 	retryConfig  *config.RetryConfig
 	limiters     map[string]*rate.Limiter
 	pausedUntil  map[string]time.Time
+	failCount    map[string]int
 	mu           sync.RWMutex
 }
+
+const (
+	circuitFailThreshold = 5
+	circuitOpenDuration  = 30 * time.Second
+)
 
 // NewHTTPSender creates a new HTTP sender
 func NewHTTPSender(cfg *config.Config) *HTTPSender {
@@ -84,15 +90,19 @@ func NewHTTPSender(cfg *config.Config) *HTTPSender {
 	}
 
 	pausedUntil := make(map[string]time.Time, len(cfg.HTTP.DestinationServers))
+	failCount := make(map[string]int, len(cfg.HTTP.DestinationServers))
 	for _, server := range cfg.HTTP.DestinationServers {
 		pausedUntil[server] = time.Time{}
+		failCount[server] = 0
 	}
 
 	logger.Info("HTTP sender initialized",
 		zap.Int("server_count", loadBalancer.ServerCount()),
 		zap.Strings("servers", loadBalancer.GetServers()),
 		zap.Int("outgoing_rate_limit_rps", cfg.OutgoingRateLimit.RequestsPerSecond),
-		zap.Int("outgoing_rate_limit_burst", cfg.OutgoingRateLimit.BurstSize))
+		zap.Int("outgoing_rate_limit_burst", cfg.OutgoingRateLimit.BurstSize),
+		zap.Int("circuit_fail_threshold", circuitFailThreshold),
+		zap.Duration("circuit_open", circuitOpenDuration))
 
 	return &HTTPSender{
 		client:       client,
@@ -100,6 +110,7 @@ func NewHTTPSender(cfg *config.Config) *HTTPSender {
 		retryConfig:  &cfg.Retry,
 		limiters:     limiters,
 		pausedUntil:  pausedUntil,
+		failCount:    failCount,
 	}
 }
 
@@ -180,6 +191,7 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte, observers ...SendObs
 			if metrics.AppMetrics != nil {
 				metrics.AppMetrics.RecordSenderRequest(targetServer, "success", sendDuration)
 			}
+			s.recordSuccess(targetServer)
 
 			return &SendResult{
 				Success:      true,
@@ -189,6 +201,7 @@ func (s *HTTPSender) Send(ctx context.Context, data []byte, observers ...SendObs
 		}
 
 		lastErr = err
+		s.recordFailure(targetServer)
 
 		var rlErr *ErrRateLimited
 		if errors.As(err, &rlErr) {
@@ -286,6 +299,29 @@ func (s *HTTPSender) pauseServer(server string, until time.Time) {
 
 	if existing, ok := s.pausedUntil[server]; !ok || until.After(existing) {
 		s.pausedUntil[server] = until
+	}
+}
+
+func (s *HTTPSender) recordSuccess(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCount[server] = 0
+}
+
+func (s *HTTPSender) recordFailure(server string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCount[server]++
+	if s.failCount[server] >= circuitFailThreshold {
+		until := time.Now().Add(circuitOpenDuration)
+		if existing, ok := s.pausedUntil[server]; !ok || until.After(existing) {
+			s.pausedUntil[server] = until
+		}
+		logger.Warn("Circuit open for destination after consecutive failures",
+			zap.String("server", server),
+			zap.Int("failures", s.failCount[server]),
+			zap.Duration("open_for", circuitOpenDuration))
+		s.failCount[server] = 0
 	}
 }
 

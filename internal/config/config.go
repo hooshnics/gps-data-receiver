@@ -25,6 +25,15 @@ type Config struct {
 	Postgres          PostgresConfig
 	Teltonika         TeltonikaConfig
 	Hooshnics         HooshnicsConfig
+	Archive           ArchiveConfig
+}
+
+// ArchiveConfig controls async-safe raw AVL archival (does not sit on TCP ACK path).
+type ArchiveConfig struct {
+	Enabled bool
+	Dir     string
+	// Strict: archive write failure leaves raw message pending (no XACK).
+	Strict bool
 }
 
 // HooshnicsConfig holds async mirror settings for the Hooshnics Laravel ingest API.
@@ -38,6 +47,8 @@ type HooshnicsConfig struct {
 	SpillDir   string
 	Timeout    time.Duration
 	Workers    int
+	// ForwardRaw enables legacy raw AVL mirror to HOOSHNICS_RAW_URL (default false = parsed-only).
+	ForwardRaw bool
 }
 
 // ServerConfig holds server configuration
@@ -54,11 +65,24 @@ type RedisConfig struct {
 	Port                   string
 	Password               string
 	DB                     int
-	StreamName             string
+	StreamName             string // HTTP / legacy parsed reports stream (gps:reports)
 	ConsumerGroup          string
 	MaxLen                 int64
 	PoolSize               int
 	QueueBackpressureLimit int64 // Reject new items when depth >= this (0 = use 90% of MaxLen)
+
+	// Sentinel HA (optional). When SentinelAddrs is non-empty, the client uses FailoverClient.
+	SentinelMaster string
+	SentinelAddrs  []string
+
+	// Zero-loss Teltonika durable ingest streams
+	RawStreamName        string // gps:raw_incoming — written BEFORE TCP ACK
+	RawConsumerGroup     string
+	RawMaxLen            int64 // 0 = no maxlen trim (preferred for zero-loss)
+	DeadLetterStream     string // gps:dead_letter
+	HooshnicsRetryStream string // gps:hooshnics_retry
+	PistatRetryStream    string // gps:pistat_retry
+	DedupeTTL            time.Duration
 }
 
 // WorkerConfig holds worker pool configuration
@@ -132,6 +156,8 @@ type TeltonikaConfig struct {
 	TCPPort        string
 	TimezoneOffset time.Duration
 	IMEIWhitelist  []string
+	// MaxConnections caps concurrent TCP sessions (0 = default 10000). Excess accepts are closed.
+	MaxConnections int
 }
 
 // Load loads configuration from environment variables
@@ -156,6 +182,15 @@ func Load() (*Config, error) {
 			MaxLen:                 getInt64("REDIS_MAX_LEN", 50000),        // Increased for 10K RPS
 			PoolSize:               getInt("REDIS_POOL_SIZE", 500),          // Increased for 10K RPS
 			QueueBackpressureLimit: getInt64("QUEUE_BACKPRESSURE_LIMIT", 0), // 0 = 90% of MaxLen
+			SentinelMaster:         getEnv("REDIS_SENTINEL_MASTER", "mymaster"),
+			SentinelAddrs:          getSlice("REDIS_SENTINEL_ADDRS", nil),
+			RawStreamName:          getEnv("REDIS_RAW_STREAM", "gps:raw_incoming"),
+			RawConsumerGroup:       getEnv("REDIS_RAW_CONSUMER_GROUP", "gps-raw-workers"),
+			RawMaxLen:              getInt64("REDIS_RAW_MAX_LEN", 0), // 0 = unlimited (zero-loss)
+			DeadLetterStream:       getEnv("REDIS_DEAD_LETTER_STREAM", "gps:dead_letter"),
+			HooshnicsRetryStream:   getEnv("REDIS_HOOSHNICS_RETRY_STREAM", "gps:hooshnics_retry"),
+			PistatRetryStream:      getEnv("REDIS_PISTAT_RETRY_STREAM", "gps:pistat_retry"),
+			DedupeTTL:              getDuration("REDIS_DEDUPE_TTL", 24*time.Hour),
 		},
 		Worker: WorkerConfig{
 			Count:     getInt("WORKER_COUNT", 50),       // Aligned with default outgoing rate limit
@@ -208,6 +243,7 @@ func Load() (*Config, error) {
 			TCPPort:        getEnv("TELTONIKA_TCP_PORT", "5055"),
 			TimezoneOffset: getDuration("TELTONIKA_TIMEZONE_OFFSET", 3*time.Hour+30*time.Minute),
 			IMEIWhitelist:  getSlice("TELTONIKA_IMEI_WHITELIST", nil),
+			MaxConnections: getInt("TELTONIKA_MAX_CONNECTIONS", 10000),
 		},
 		Hooshnics: HooshnicsConfig{
 			Enabled:    getBoolAny([]string{"HOOSHNICS_MIRROR_ENABLED", "HOOSHNIX_MIRROR_ENABLED"}, false),
@@ -218,6 +254,12 @@ func Load() (*Config, error) {
 			SpillDir:   getEnvAny([]string{"HOOSHNICS_SPILL_DIR", "HOOSHNIX_SPILL_DIR"}, "logs/hooshnics_spill"),
 			Timeout:    getDurationAny([]string{"HOOSHNICS_TIMEOUT", "HOOSHNIX_TIMEOUT"}, 15*time.Second),
 			Workers:    getIntAny([]string{"HOOSHNICS_WORKERS", "HOOSHNIX_WORKERS"}, 4),
+			ForwardRaw: getBool("HOOSHNICS_FORWARD_RAW", false),
+		},
+		Archive: ArchiveConfig{
+			Enabled: getBool("ARCHIVE_ENABLED", false),
+			Dir:     getEnv("ARCHIVE_DIR", "archive"),
+			Strict:  getBool("ARCHIVE_STRICT", false),
 		},
 	}
 
@@ -232,6 +274,30 @@ func Load() (*Config, error) {
 		}
 		if config.Hooshnics.RawURL == "" && config.Hooshnics.ParsedURL == "" {
 			return nil, fmt.Errorf("HOOSHNICS_RAW_URL or HOOSHNICS_PARSED_URL is required when HOOSHNICS_MIRROR_ENABLED=true")
+		}
+	}
+
+	envName := strings.ToLower(getEnv("ENVIRONMENT", "development"))
+	if envName == "production" {
+		labEscape := getBool("GPS_LAB_MODE", false)
+
+		if config.Teltonika.TCPEnabled && len(config.Teltonika.IMEIWhitelist) == 0 {
+			if !labEscape || !getBool("TELTONIKA_ALLOW_ANY_IMEI", false) {
+				return nil, fmt.Errorf("production security: TELTONIKA_IMEI_WHITELIST is required when TELTONIKA_TCP_ENABLED=true (lab only: GPS_LAB_MODE=true and TELTONIKA_ALLOW_ANY_IMEI=true)")
+			}
+		}
+		if config.Postgres.Enabled {
+			pw := config.Postgres.Password
+			if pw == "" || pw == "gps" || pw == "password" || pw == "postgres" {
+				if !labEscape || !getBool("POSTGRES_ALLOW_DEFAULT_PASSWORD", false) {
+					return nil, fmt.Errorf("production security: POSTGRES_PASSWORD must be a non-default secret (lab only: GPS_LAB_MODE=true and POSTGRES_ALLOW_DEFAULT_PASSWORD=true)")
+				}
+			}
+		}
+		if config.Redis.Password == "" {
+			if !labEscape || !getBool("REDIS_ALLOW_EMPTY_PASSWORD", false) {
+				return nil, fmt.Errorf("production security: REDIS_PASSWORD is required (lab only: GPS_LAB_MODE=true and REDIS_ALLOW_EMPTY_PASSWORD=true); keep Redis off public interfaces")
+			}
 		}
 	}
 
@@ -393,9 +459,14 @@ func getFloat64(key string, defaultValue float64) float64 {
 	return value
 }
 
-// GetRedisAddr returns the Redis address
+// GetRedisAddr returns the Redis address (standalone mode).
 func (c *RedisConfig) GetAddr() string {
 	return fmt.Sprintf("%s:%s", c.Host, c.Port)
+}
+
+// UseSentinel reports whether Sentinel failover client should be used.
+func (c *RedisConfig) UseSentinel() bool {
+	return len(c.SentinelAddrs) > 0
 }
 
 // DSN returns the PostgreSQL connection string

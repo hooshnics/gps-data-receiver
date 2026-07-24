@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/internal/parser"
 	"github.com/gps-data-receiver/pkg/logger"
 	"go.uber.org/zap"
@@ -100,12 +101,13 @@ func (w *AsyncWriter) enqueueSuccessOrFailed(op writeOp) {
 	case w.ch <- op:
 	case <-w.ctx.Done():
 	default:
-		go func() {
-			select {
-			case w.ch <- op:
-			case <-w.ctx.Done():
-			}
-		}()
+		// Never spawn unbounded goroutines under backpressure — that leaks memory at fleet scale.
+		logger.Warn("Postgres async write queue full — dropping success/failed op",
+			zap.Int("record_count", len(op.records)),
+			zap.Int("kind", int(op.kind)))
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.IncPostgresAsyncDrop()
+		}
 	}
 }
 
@@ -118,12 +120,11 @@ func (w *AsyncWriter) enqueueInvalid(op writeOp) {
 	case w.ch <- op:
 	case <-w.ctx.Done():
 	default:
-		go func() {
-			select {
-			case w.ch <- op:
-			case <-w.ctx.Done():
-			}
-		}()
+		logger.Warn("Postgres async write queue full — dropping invalid op",
+			zap.Int("invalid_count", len(op.invalid)))
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.IncPostgresAsyncDrop()
+		}
 	}
 }
 

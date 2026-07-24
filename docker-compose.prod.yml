@@ -1,0 +1,30 @@
+# Production-oriented overlay for gps-data-receiver.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Requires real credentials (see env.production.example).
+# Architecture unchanged: TCP → CRC → Redis XADD → ACK → async consumers.
+
+services:
+  app:
+    environment:
+      ENVIRONMENT: production
+      GPS_LAB_MODE: "false"
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      # Must also provide via env_file / host env:
+      #   TELTONIKA_IMEI_WHITELIST, POSTGRES_PASSWORD, REDIS_PASSWORD
+      TELTONIKA_TCP_ENABLED: "true"
+      TELTONIKA_MAX_CONNECTIONS: "10000"
+      ARCHIVE_ENABLED: "true"
+      ARCHIVE_DIR: /var/lib/gps-archive
+      ARCHIVE_STRICT: "false"
+      REDIS_POOL_SIZE: "500"
+      WORKER_COUNT: "80"
+      WORKER_BATCH_SIZE: "50"
+      REDIS_RAW_MAX_LEN: "0"
+      REDIS_DEDUPE_TTL: 24h
+      HTTP_CLIENT_TIMEOUT: "15s"
+      OUTGOING_RATE_LIMIT_RPS: "50"
+    stop_grace_period: 120s
+    # Do NOT set user: "1000:1000" — entrypoint chowns archive then drops to appuser.

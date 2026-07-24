@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	gojson "github.com/goccy/go-json"
+	"github.com/gps-data-receiver/internal/metrics"
 	"github.com/gps-data-receiver/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -54,15 +55,30 @@ type job struct {
 	attempt int
 }
 
+// RetrySink parks failed Hooshnics HTTP jobs on a durable Redis stream.
+type RetrySink interface {
+	EnqueueHooshnicsRetry(ctx context.Context, kind, url string, body []byte, headersJSON string) error
+}
+
 // Forwarder mirrors inbound GPS traffic to Hooshnics without blocking the hot path.
-// All public Forward* methods are non-blocking (channel enqueue / spill).
+// All public Forward* methods are non-blocking (channel enqueue / Redis retry).
 type Forwarder struct {
 	cfg    Config
 	client *http.Client
 	ch     chan job
 	done   chan struct{}
 	wg     sync.WaitGroup
+	retry  RetrySink
+
+	mu            sync.Mutex
+	failCount     int
+	circuitUntil  time.Time
 }
+
+const (
+	hooshCircuitFailThreshold = 5
+	hooshCircuitOpenDuration  = 30 * time.Second
+)
 
 // NewForwarder creates a forwarder when enabled and configured. Returns nil when disabled.
 func NewForwarder(cfg Config) (*Forwarder, error) {
@@ -109,6 +125,15 @@ func NewForwarder(cfg Config) (*Forwarder, error) {
 		ch:   make(chan job, cfg.BufferSize),
 		done: make(chan struct{}),
 	}, nil
+}
+
+// SetRetrySink configures durable Redis retry for failed/full-buffer dispatches.
+// Prefer this over local disk spill for zero-loss deployments.
+func (f *Forwarder) SetRetrySink(sink RetrySink) {
+	if f == nil {
+		return
+	}
+	f.retry = sink
 }
 
 // Start launches background workers.
@@ -226,10 +251,10 @@ func (f *Forwarder) enqueue(j job) {
 	select {
 	case f.ch <- j:
 	default:
-		logger.Warn("Hooshnics mirror buffer full — spilling to disk",
+		logger.Warn("Hooshnics mirror buffer full — parking on Redis retry stream",
 			zap.String("kind", j.kind),
 			zap.Int("payload_size", len(j.body)))
-		f.spill(j.kind, j.body)
+		f.parkRetry(j)
 	}
 }
 
@@ -253,6 +278,13 @@ func (f *Forwarder) worker() {
 }
 
 func (f *Forwarder) deliver(j job) {
+	if f.circuitOpen() {
+		logger.Warn("Hooshnics circuit open — parking on retry without HTTP attempts",
+			zap.String("kind", j.kind))
+		f.parkRetry(j)
+		return
+	}
+
 	const maxAttempts = 5
 	backoff := 500 * time.Millisecond
 
@@ -260,6 +292,7 @@ func (f *Forwarder) deliver(j job) {
 		j.attempt = attempt
 		status, err := f.post(j)
 		if err == nil && status >= 200 && status < 300 {
+			f.recordSuccess()
 			logger.Debug("Hooshnics mirror delivered",
 				zap.String("kind", j.kind),
 				zap.Int("status", status),
@@ -273,7 +306,7 @@ func (f *Forwarder) deliver(j job) {
 				zap.String("kind", j.kind),
 				zap.Int("status", status),
 				zap.Int("payload_size", len(j.body)))
-			f.spill(j.kind, j.body)
+			f.parkRetry(j)
 			return
 		}
 
@@ -284,7 +317,8 @@ func (f *Forwarder) deliver(j job) {
 			zap.Error(err))
 
 		if attempt == maxAttempts {
-			f.spill(j.kind, j.body)
+			f.recordFailure()
+			f.parkRetry(j)
 			return
 		}
 
@@ -292,13 +326,41 @@ func (f *Forwarder) deliver(j job) {
 		select {
 		case <-f.done:
 			timer.Stop()
-			f.spill(j.kind, j.body)
+			f.parkRetry(j)
 			return
 		case <-timer.C:
 		}
 		backoff *= 2
 		if backoff > 15*time.Second {
 			backoff = 15 * time.Second
+		}
+	}
+}
+
+func (f *Forwarder) circuitOpen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return time.Now().Before(f.circuitUntil)
+}
+
+func (f *Forwarder) recordSuccess() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failCount = 0
+}
+
+func (f *Forwarder) recordFailure() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failCount++
+	if f.failCount >= hooshCircuitFailThreshold {
+		f.circuitUntil = time.Now().Add(hooshCircuitOpenDuration)
+		logger.Warn("Hooshnics circuit open after consecutive delivery failures",
+			zap.Int("failures", f.failCount),
+			zap.Duration("open_for", hooshCircuitOpenDuration))
+		f.failCount = 0
+		if metrics.AppMetrics != nil {
+			metrics.AppMetrics.IncHooshnicsCircuitOpen()
 		}
 	}
 }
@@ -327,6 +389,34 @@ func (f *Forwarder) post(j job) (int, error) {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
+}
+
+func (f *Forwarder) parkRetry(j job) {
+	if metrics.AppMetrics != nil {
+		metrics.AppMetrics.IncForwardingFailures("hooshnics")
+	}
+	if f.retry != nil {
+		headersJSON := "{}"
+		if len(j.headers) > 0 {
+			if b, err := gojson.Marshal(j.headers); err == nil {
+				headersJSON = string(b)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := f.retry.EnqueueHooshnicsRetry(ctx, j.kind, j.url, j.body, headersJSON); err != nil {
+			logger.Error("Hooshnics Redis retry enqueue failed — falling back to disk spill",
+				zap.String("kind", j.kind),
+				zap.Error(err))
+			f.spill(j.kind, j.body)
+			return
+		}
+		logger.Warn("Hooshnics payload parked on Redis retry stream",
+			zap.String("kind", j.kind),
+			zap.Int("payload_size", len(j.body)))
+		return
+	}
+	f.spill(j.kind, j.body)
 }
 
 func (f *Forwarder) spill(kind string, body []byte) {

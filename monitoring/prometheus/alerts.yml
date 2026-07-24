@@ -1,0 +1,251 @@
+groups:
+  - name: gps-receiver-critical
+    interval: 30s
+    rules:
+      # --- Availability ---
+      - alert: GPSReceiverDown
+        expr: up{job="gps-receiver"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: app
+        annotations:
+          summary: "GPS Data Receiver scrape target is down"
+          description: "Prometheus cannot scrape app:8080/metrics for >1m. Ingest may be offline."
+          runbook: "docs/runbooks/alerts.md#gpsreceiverdown"
+
+      - alert: RedisUnavailable
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: redis
+        annotations:
+          summary: "Redis exporter target is down"
+          description: "Redis metrics scrape failed. TCP ACK path will withhold ACK if XADD fails."
+          runbook: "docs/runbooks/redis-failure.md"
+
+      - alert: RedisMemoryHigh
+        expr: |
+          (
+            redis_memory_used_bytes{job="redis"}
+            /
+            redis_memory_max_bytes{job="redis"}
+          ) > 0.80
+          and redis_memory_max_bytes{job="redis"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: redis
+        annotations:
+          summary: "Redis memory usage above 80% of maxmemory"
+          description: "used={{ $value | humanizePercentage }}. noeviction will cause XADD failures (Zero-Drop: no ACK)."
+          runbook: "docs/runbooks/redis-failure.md"
+
+      # --- Stream / consumer health ---
+      - alert: RedisRawStreamGrowth
+        expr: gps_raw_stream_depth > 50000
+        for: 10m
+        labels:
+          severity: critical
+          component: ingest
+        annotations:
+          summary: "gps:raw_incoming depth elevated"
+          description: "XLEN={{ $value }}. Consumers lagging behind durable ingest."
+          runbook: "docs/runbooks/alerts.md#redisrawstreamgrowth"
+
+      - alert: RawConsumerLag
+        expr: gps_raw_pending_count > 10000
+        for: 5m
+        labels:
+          severity: critical
+          component: ingest
+        annotations:
+          summary: "Raw consumer group pending (PEL) high"
+          description: "pending={{ $value }}. Check workers, XAUTOCLAIM, destination health."
+          runbook: "docs/runbooks/worker-crash.md"
+
+      - alert: PendingMessagesCritical
+        expr: gps_raw_pending_count > 50000
+        for: 2m
+        labels:
+          severity: critical
+          component: ingest
+        annotations:
+          summary: "Critical pending message backlog"
+          description: "pending={{ $value }}. Risk of Redis memory pressure under noeviction."
+          runbook: "docs/runbooks/worker-crash.md"
+
+      - alert: DeadLetterQueueGrowth
+        expr: |
+          increase(gps_teltonika_dead_letter_total[15m]) > 50
+          or gps_dead_letter_depth > 1000
+        for: 5m
+        labels:
+          severity: critical
+          component: ingest
+        annotations:
+          summary: "DLQ growth detected"
+          description: "Poison/decode failures rising. Inspect gps:dead_letter and replay dry-run."
+          runbook: "docs/runbooks/data-recovery.md"
+
+      - alert: RetryQueueGrowth
+        expr: |
+          gps_pistat_retry_depth > 5000
+          or gps_hooshnics_retry_depth > 5000
+        for: 10m
+        labels:
+          severity: critical
+          component: integrations
+        annotations:
+          summary: "Retry stream depth elevated"
+          description: "PiStat and/or Hooshnics destinations unhealthy or rate-limited."
+          runbook: "docs/runbooks/alerts.md#retryqueuegrowth"
+
+      # --- ACK / parse path ---
+      - alert: ACKLatencyDegraded
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(gps_teltonika_redis_write_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          component: ack-path
+        annotations:
+          summary: "ACK-path Redis XADD p99 > 500ms"
+          description: "Durable write latency degraded (AOF/CPU/pool). Profile before changing Zero-Drop path."
+          runbook: "docs/runbooks/alerts.md#acklatencydegraded"
+
+      - alert: TeltonikaIngestErrorsSpike
+        expr: increase(gps_teltonika_ingest_errors_total[5m]) > 20
+        for: 2m
+        labels:
+          severity: critical
+          component: ack-path
+        annotations:
+          summary: "Redis XADD failures (ACK withheld) spiking"
+          description: "Devices retain SD buffer. Check Redis HA / memory / connectivity."
+          runbook: "docs/runbooks/redis-failure.md"
+
+      - alert: TCPConnectionSpike
+        expr: gps_teltonika_active_connections > 8000
+        for: 5m
+        labels:
+          severity: critical
+          component: tcp
+        annotations:
+          summary: "Teltonika TCP active sessions spiked"
+          description: "active={{ $value }}. Check reconnect storms, LB, ulimit."
+          runbook: "docs/runbooks/alerts.md#tcpconnectionspike"
+
+      - alert: ParserFailureSpike
+        expr: |
+          increase(gps_teltonika_decode_failures_total[10m]) > 100
+          or increase(gps_data_parse_total{status="failure"}[10m]) > 100
+        for: 5m
+        labels:
+          severity: critical
+          component: parser
+        annotations:
+          summary: "Parser / decode failure spike"
+          description: "Bad firmware payloads or regression. Use cmd/replay dry-run."
+          runbook: "docs/runbooks/data-recovery.md"
+
+      - alert: DatabaseConnectionExhaustion
+        expr: |
+          gps_postgres_max_open_connections > 0
+          and
+          (gps_postgres_in_use_connections / gps_postgres_max_open_connections) > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          component: postgres
+        annotations:
+          summary: "PostgreSQL connection pool near exhaustion"
+          description: "in_use/max > 90%. Increase pool or reduce writers; see postgres-failure runbook."
+          runbook: "docs/runbooks/postgres-failure.md"
+
+      - alert: TCPIngestStopped
+        expr: |
+          up{job="gps-receiver"} == 1
+          and
+          rate(gps_teltonika_packets_received_total[5m]) == 0
+          and
+          gps_teltonika_active_connections == 0
+        for: 15m
+        labels:
+          severity: critical
+          component: tcp
+        annotations:
+          summary: "Teltonika TCP ingest appears stopped"
+          description: "App up but no packets received and no active sessions for 15m (ignore if fleet idle)."
+          runbook: "docs/runbooks/alerts.md"
+
+      - alert: RedisSentinelNoMaster
+        expr: redis_uptime_in_seconds{job="redis"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: redis
+        annotations:
+          summary: "Redis instance not reporting uptime (possible failover/outage)"
+          description: "Check Sentinel master address and gps_teltonika_ingest_errors_total."
+          runbook: "docs/runbooks/redis-failover-drill.md"
+
+  - name: gps-receiver-warning
+    interval: 30s
+    rules:
+      - alert: RedisRawStreamGrowthWarning
+        expr: gps_raw_stream_depth > 10000
+        for: 15m
+        labels:
+          severity: warning
+          component: ingest
+        annotations:
+          summary: "gps:raw_incoming depth warning"
+          description: "XLEN={{ $value }} sustained."
+          runbook: "docs/runbooks/alerts.md#redisrawstreamgrowth"
+
+      - alert: CRCFailureRateHigh
+        expr: |
+          rate(gps_teltonika_crc_failures_total[5m])
+          /
+          clamp_min(rate(gps_teltonika_packets_received_total[5m]), 0.001)
+          > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: tcp
+        annotations:
+          summary: "CRC failure rate > 5% of received packets"
+          description: "Possible corruption or simulator/device misconfiguration."
+          runbook: "docs/runbooks/alerts.md"
+
+      - alert: PostgresDown
+        expr: gps_postgres_open_connections == 0 and on() up{job="gps-receiver"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: postgres
+        annotations:
+          summary: "App reports zero Postgres open connections while running"
+          description: "Storage may be disabled or pool failed — confirm POSTGRES_ENABLED and connectivity."
+          runbook: "docs/runbooks/postgres-failure.md"
+
+      - alert: HostDiskUsageHigh
+        expr: |
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+            /
+            node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+          ) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Root filesystem free space below 15%"
+          description: "Archive/AOF/Postgres volumes may fill — free space or expand disk."
+          runbook: "docs/runbooks/alertmanager.md"

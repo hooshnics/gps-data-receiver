@@ -79,6 +79,7 @@ type gpsRecordRow struct {
 	imei       string
 	rawData    string
 	parsedJSON []byte
+	dedupeKey  string
 }
 
 type gpsFailedRecordRow struct {
@@ -154,6 +155,11 @@ CREATE TABLE IF NOT EXISTS gps_invalid_records (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_gps_invalid_records_created_at ON gps_invalid_records (created_at);
+
+-- Idempotency: device retransmission of the same telemetry point.
+-- NULLs allowed (legacy rows); unique only when dedupe_key is set.
+ALTER TABLE gps_records ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gps_records_dedupe_key ON gps_records (dedupe_key);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate postgres schema: %w", err)
@@ -281,10 +287,14 @@ func prepareGPSRecordRows(records []parser.ParsedGPSData) []gpsRecordRow {
 			rawData = " "
 		}
 
+		dedupeKey := fmt.Sprintf("%s|%s|%.6f|%.6f|%d",
+			record.IMEI, record.DateTime, record.Coordinate[0], record.Coordinate[1], record.Status)
+
 		rows = append(rows, gpsRecordRow{
 			imei:       record.IMEI,
 			rawData:    rawData,
 			parsedJSON: parsedJSON,
+			dedupeKey:  dedupeKey,
 		})
 	}
 	return rows
@@ -318,21 +328,22 @@ func (s *PostgresStore) StoreRecords(ctx context.Context, records []parser.Parse
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	const columnsPerRow = 4
+	const columnsPerRow = 5
 	valuePlaceholders := make([]string, 0, len(rows))
 	args := make([]interface{}, 0, len(rows)*columnsPerRow)
 
 	for i, row := range rows {
 		base := i*columnsPerRow + 1
 		valuePlaceholders = append(valuePlaceholders, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d)",
-			base, base+1, base+2, base+3,
+			"($%d, $%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4,
 		))
-		args = append(args, row.imei, row.rawData, row.parsedJSON, now)
+		args = append(args, row.imei, row.rawData, row.parsedJSON, now, row.dedupeKey)
 	}
 
-	query := `INSERT INTO gps_records (imei, raw_data, parsed_data, created_at) VALUES ` +
-		strings.Join(valuePlaceholders, ", ")
+	query := `INSERT INTO gps_records (imei, raw_data, parsed_data, created_at, dedupe_key) VALUES ` +
+		strings.Join(valuePlaceholders, ", ") +
+		` ON CONFLICT (dedupe_key) DO NOTHING`
 
 	if err := execBatchInsert(ctx, tx, query, args); err != nil {
 		return err
@@ -632,4 +643,18 @@ func (s *PostgresStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+// PoolStats returns database/sql pool statistics for Prometheus.
+func (s *PostgresStore) PoolStats() sql.DBStats {
+	if s == nil || s.db == nil {
+		return sql.DBStats{}
+	}
+	return s.db.Stats()
+}
+
+// MaxOpenConns returns the configured max open connections from pool stats.
+func (s *PostgresStore) MaxOpenConns() int {
+	st := s.PoolStats()
+	return st.MaxOpenConnections
 }

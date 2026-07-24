@@ -69,3 +69,48 @@ func ParsePacket(data []byte) (codecID byte, records []Record, err error) {
 
 	return codecID, records, nil
 }
+
+// CountAVLRecords validates preamble + CRC and returns Number-of-Data for the TCP ACK.
+// It intentionally does NOT decode IO/GPS records — keep that off the ACK hot path.
+// Full decoding remains in ParsePacket (unchanged) and is used by the post-ACK worker.
+func CountAVLRecords(data []byte) (uint32, error) {
+	if len(data) < 12 {
+		return 0, fmt.Errorf("packet too short: %d bytes", len(data))
+	}
+	if data[0]|data[1]|data[2]|data[3] != 0 {
+		return 0, fmt.Errorf("invalid preamble")
+	}
+
+	dataFieldLen := binary.BigEndian.Uint32(data[4:8])
+	if dataFieldLen == 0 || dataFieldLen > maxDataFieldLength {
+		return 0, fmt.Errorf("invalid data field length: %d", dataFieldLen)
+	}
+
+	expectedLen := 8 + int(dataFieldLen) + 4
+	if len(data) < expectedLen {
+		return 0, fmt.Errorf("packet truncated: have %d, need %d", len(data), expectedLen)
+	}
+
+	payload := data[8 : 8+dataFieldLen]
+	crcBytes := data[8+dataFieldLen : 8+dataFieldLen+4]
+	receivedCRC := binary.BigEndian.Uint32(crcBytes)
+	computedCRC := uint32(CRC16IBM(payload))
+	if receivedCRC != computedCRC {
+		return 0, fmt.Errorf("CRC mismatch: got 0x%08X want 0x%08X", receivedCRC, computedCRC)
+	}
+
+	if len(payload) < 3 {
+		return 0, fmt.Errorf("payload too short")
+	}
+
+	numRecords := uint32(payload[1])
+	numRecords2 := uint32(payload[len(payload)-1])
+	if numRecords != numRecords2 {
+		return 0, fmt.Errorf("record count mismatch: %d != %d", numRecords, numRecords2)
+	}
+	if numRecords == 0 {
+		return 0, fmt.Errorf("zero records")
+	}
+
+	return numRecords, nil
+}

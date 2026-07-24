@@ -121,6 +121,65 @@ func TestGetRedisAddr(t *testing.T) {
 	assert.Equal(t, "redis-host:6380", addr)
 }
 
+func TestLoadConfig_ProductionSecurityGuards(t *testing.T) {
+	base := func() {
+		os.Clearenv()
+		os.Setenv("DESTINATION_SERVERS", "http://server1.example.com")
+		os.Setenv("ENVIRONMENT", "production")
+		os.Setenv("TELTONIKA_TCP_ENABLED", "true")
+		os.Setenv("POSTGRES_ENABLED", "true")
+		os.Setenv("POSTGRES_PASSWORD", "gps")
+		os.Setenv("REDIS_PASSWORD", "")
+	}
+
+	t.Run("fails without whitelist redis and postgres secrets", func(t *testing.T) {
+		base()
+		_, err := config.Load()
+		assert.Error(t, err)
+	})
+
+	t.Run("fails on default postgres password", func(t *testing.T) {
+		base()
+		os.Setenv("TELTONIKA_IMEI_WHITELIST", "356890080000001")
+		os.Setenv("REDIS_PASSWORD", "strong-redis")
+		os.Setenv("POSTGRES_PASSWORD", "gps")
+		_, err := config.Load()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "POSTGRES_PASSWORD")
+	})
+
+	t.Run("fails on empty redis password", func(t *testing.T) {
+		base()
+		os.Setenv("TELTONIKA_IMEI_WHITELIST", "356890080000001")
+		os.Setenv("POSTGRES_PASSWORD", "strong-pg")
+		os.Setenv("REDIS_PASSWORD", "")
+		_, err := config.Load()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "REDIS_PASSWORD")
+	})
+
+	t.Run("passes with production secrets", func(t *testing.T) {
+		base()
+		os.Setenv("TELTONIKA_IMEI_WHITELIST", "356890080000001")
+		os.Setenv("POSTGRES_PASSWORD", "strong-pg")
+		os.Setenv("REDIS_PASSWORD", "strong-redis")
+		cfg, err := config.Load()
+		assert.NoError(t, err)
+		assert.NotNil(t, cfg)
+	})
+
+	t.Run("lab escape allows defaults", func(t *testing.T) {
+		base()
+		os.Setenv("GPS_LAB_MODE", "true")
+		os.Setenv("TELTONIKA_ALLOW_ANY_IMEI", "true")
+		os.Setenv("POSTGRES_ALLOW_DEFAULT_PASSWORD", "true")
+		os.Setenv("REDIS_ALLOW_EMPTY_PASSWORD", "true")
+		cfg, err := config.Load()
+		assert.NoError(t, err)
+		assert.NotNil(t, cfg)
+	})
+}
+
 func TestLoadConfig_ServerList(t *testing.T) {
 	os.Clearenv()
 

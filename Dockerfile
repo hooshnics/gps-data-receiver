@@ -69,20 +69,30 @@ RUN sed -i 's|https://dl-cdn.alpinelinux.org|https://mirror.arvancloud.ir|g' /et
     apk add --no-cache \
     ca-certificates \
     tzdata \
-    wget && \
+    wget \
+    su-exec && \
     addgroup -g 1000 appuser && \
-    adduser -D -G appuser -u 1000 appuser
+    adduser -D -G appuser -u 1000 appuser && \
+    mkdir -p /var/lib/gps-archive && \
+    chown appuser:appuser /var/lib/gps-archive && \
+    chmod 0750 /var/lib/gps-archive
 
 WORKDIR /app
 
 COPY --from=builder --chown=appuser:appuser /out/gps-receiver ./gps-receiver
 COPY --from=frontend --chown=appuser:appuser /app/web/dist ./web/dist
+COPY --chmod=0755 docker/entrypoint.sh /entrypoint.sh
 
-USER appuser
+# Start as root only long enough for entrypoint to chown the archive volume,
+# then drop to appuser via su-exec (see docker/entrypoint.sh).
+USER root
+
+ENV ARCHIVE_DIR=/var/lib/gps-archive
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["./gps-receiver"]

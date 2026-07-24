@@ -12,55 +12,125 @@ import (
 	"go.uber.org/zap"
 )
 
-// RedisQueue handles Redis Stream operations
+// RedisQueue handles Redis Stream operations for HTTP reports and durable Teltonika ingest.
 type RedisQueue struct {
 	client        *redis.Client
 	streamName    string
 	consumerGroup string
 	maxLen        int64
+
+	rawStream      string
+	rawGroup       string
+	rawMaxLen      int64
+	deadLetterStream string
+	hooshnicsRetryStream string
+	hooshnicsRetryGroup  string
+	pistatRetryStream    string
+	pistatRetryGroup     string
+	dedupeTTL            time.Duration
 }
 
-// NewRedisQueue creates a new Redis queue
+// NewRedisQueue creates a new Redis queue and ensures all durable streams/groups exist.
 func NewRedisQueue(cfg *config.RedisConfig) (*RedisQueue, error) {
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
 		poolSize = 200
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:         cfg.GetAddr(),
-		Password:     cfg.Password,
-		DB:           cfg.DB,
-		PoolSize:     poolSize,
-		MinIdleConns: poolSize / 4,
-		PoolTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-	})
+	var client *redis.Client
+	if cfg.UseSentinel() {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    cfg.SentinelMaster,
+			SentinelAddrs: cfg.SentinelAddrs,
+			Password:      cfg.Password,
+			DB:            cfg.DB,
+			PoolSize:      poolSize,
+			MinIdleConns:  poolSize / 4,
+			PoolTimeout:   10 * time.Second,
+			ReadTimeout:   5 * time.Second,
+			WriteTimeout:  5 * time.Second,
+			DialTimeout:   5 * time.Second,
+		})
+		logger.Info("Redis client using Sentinel failover",
+			zap.String("master", cfg.SentinelMaster),
+			zap.Strings("sentinels", cfg.SentinelAddrs))
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr:         cfg.GetAddr(),
+			Password:     cfg.Password,
+			DB:           cfg.DB,
+			PoolSize:     poolSize,
+			MinIdleConns: poolSize / 4,
+			PoolTimeout:  10 * time.Second,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+			DialTimeout:  5 * time.Second,
+		})
+		logger.Info("Redis client using standalone address", zap.String("addr", cfg.GetAddr()))
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
-	queue := &RedisQueue{
-		client:        client,
-		streamName:    cfg.StreamName,
-		consumerGroup: cfg.ConsumerGroup,
-		maxLen:        cfg.MaxLen,
+	rawStream := cfg.RawStreamName
+	if rawStream == "" {
+		rawStream = "gps:raw_incoming"
+	}
+	rawGroup := cfg.RawConsumerGroup
+	if rawGroup == "" {
+		rawGroup = "gps-raw-workers"
+	}
+	deadLetter := cfg.DeadLetterStream
+	if deadLetter == "" {
+		deadLetter = "gps:dead_letter"
+	}
+	hooshRetry := cfg.HooshnicsRetryStream
+	if hooshRetry == "" {
+		hooshRetry = "gps:hooshnics_retry"
+	}
+	pistatRetry := cfg.PistatRetryStream
+	if pistatRetry == "" {
+		pistatRetry = "gps:pistat_retry"
+	}
+	dedupeTTL := cfg.DedupeTTL
+	if dedupeTTL <= 0 {
+		dedupeTTL = 24 * time.Hour
 	}
 
-	// Ensure stream and consumer group exist (retry on transient failure)
+	queue := &RedisQueue{
+		client:               client,
+		streamName:           cfg.StreamName,
+		consumerGroup:        cfg.ConsumerGroup,
+		maxLen:               cfg.MaxLen,
+		rawStream:            rawStream,
+		rawGroup:             rawGroup,
+		rawMaxLen:            cfg.RawMaxLen,
+		deadLetterStream:     deadLetter,
+		hooshnicsRetryStream: hooshRetry,
+		hooshnicsRetryGroup:  "gps-hooshnics-retry-workers",
+		pistatRetryStream:    pistatRetry,
+		pistatRetryGroup:     "gps-pistat-retry-workers",
+		dedupeTTL:            dedupeTTL,
+	}
+
 	if err := queue.ensureConsumerGroupWithRetry(context.Background(), 3, 2*time.Second); err != nil {
 		return nil, fmt.Errorf("consumer group init: %w", err)
+	}
+	if err := queue.EnsureDurableStreams(context.Background()); err != nil {
+		return nil, fmt.Errorf("durable streams init: %w", err)
 	}
 
 	logger.Info("Redis queue initialized",
 		zap.String("stream", queue.streamName),
 		zap.String("consumer_group", queue.consumerGroup),
+		zap.String("raw_stream", queue.rawStream),
+		zap.String("raw_group", queue.rawGroup),
 		zap.Int64("max_len", queue.maxLen),
+		zap.Int64("raw_max_len", queue.rawMaxLen),
 		zap.Int("pool_size", poolSize))
 
 	return queue, nil
@@ -96,7 +166,7 @@ func (q *RedisQueue) EnqueueWithDepth(ctx context.Context, data []byte) (message
 	return messageID, depth, nil
 }
 
-// Enqueue adds a message to the Redis Stream
+// Enqueue adds a message to the Redis Stream (HTTP / legacy parsed path).
 func (q *RedisQueue) Enqueue(ctx context.Context, data []byte) (string, error) {
 	result, err := q.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: q.streamName,
@@ -148,7 +218,6 @@ func (q *RedisQueue) Len(ctx context.Context) (int64, error) {
 }
 
 // EnsureConsumerGroup creates the stream and consumer group if they do not exist.
-// Idempotent: safe to call on every NOGROUP. Returns nil on success or if group already exists (BUSYGROUP).
 func (q *RedisQueue) EnsureConsumerGroup(ctx context.Context) error {
 	err := q.client.XGroupCreateMkStream(ctx, q.streamName, q.consumerGroup, "0").Err()
 	if err == nil {
@@ -163,7 +232,6 @@ func (q *RedisQueue) EnsureConsumerGroup(ctx context.Context) error {
 	return err
 }
 
-// ensureConsumerGroupWithRetry creates the consumer group with retries (for startup).
 func (q *RedisQueue) ensureConsumerGroupWithRetry(ctx context.Context, attempts int, backoff time.Duration) error {
 	var lastErr error
 	for i := 0; i < attempts; i++ {
